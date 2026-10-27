@@ -63,6 +63,20 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("找不到文件", err)
 
+    def test_root_can_come_from_the_environment(self) -> None:
+        with patch.dict(os.environ, {"STUDYBUDDY_ROOT": self.root}):
+            code, out, _ = run("stats")
+        self.assertEqual(code, 0)
+        self.assertIn(self.root, out)
+
+    def test_explicit_root_beats_the_environment(self) -> None:
+        other = str(self.tmp / "other")
+        with patch.dict(os.environ, {"STUDYBUDDY_ROOT": other}):
+            code, out, _ = run("--root", self.root, "stats")
+        self.assertEqual(code, 0)
+        self.assertIn(self.root, out)
+        self.assertNotIn(other, out)
+
     def test_stats(self) -> None:
         run("--root", self.root, "add", str(self.pdf))
         code, out, _ = run("--root", self.root, "stats")

@@ -269,14 +269,21 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 └── memory.json    # 画像、事实、历史、话题
 ```
 
-默认在运行目录下，用 `--root` 换位置。整个目录可以直接打包带走。`.gitignore`
+默认在运行目录下，用 `--root` 或环境变量 `STUDYBUDDY_ROOT` 换位置：
+
+```bash
+export STUDYBUDDY_ROOT="$HOME/Documents/studybuddy-data/library"
+studybuddy books
+```
+
+把书库放在 `~/Documents` 这类不会被清空的地方，比留在 `/tmp` 或项目目录里更稳妥。整个目录可以直接打包带走。`.gitignore`
 已经把它排除，避免把教材和学习记录误提交。
 
 ## 开发
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 275 个测试
+make check       # ruff + mypy --strict + 277 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -321,6 +328,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-275 offline tests, MIT licensed.
+277 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

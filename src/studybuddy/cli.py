@@ -45,7 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="studybuddy",
         description="教材驱动的学习助手：上传 PDF 教材，跨书答疑，带页码引用，并记住你的薄弱点。",
     )
-    parser.add_argument("--root", default=".studybuddy", help="数据目录，默认 .studybuddy")
+    parser.add_argument(
+        "--root",
+        default=os.environ.get("STUDYBUDDY_ROOT", ".studybuddy"),
+        help="数据目录，默认 .studybuddy（也可用 STUDYBUDDY_ROOT 设置）",
+    )
     parser.add_argument("-m", "--model", default=os.environ.get("STUDYBUDDY_MODEL", "gpt-4o-mini"))
     parser.add_argument("-b", "--base-url", default=os.environ.get("STUDYBUDDY_BASE_URL"))
     parser.add_argument("-k", "--api-key", default=None)
