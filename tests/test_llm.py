@@ -5,8 +5,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import ssl
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 from studybuddy import LLM
@@ -130,6 +133,46 @@ class TestParsing(unittest.TestCase):
             }
         )
         self.assertEqual(self._complete(body).usage.total_tokens, 5)
+
+
+class TestTlsTrustStore(unittest.TestCase):
+    def test_system_ca_bundle_is_loaded(self) -> None:
+        """macOS pythons often ship without a CA store; we must load the OS one."""
+        from studybuddy.llm import _SYSTEM_CA_BUNDLES, _ssl_context
+
+        context = _ssl_context(None)
+        self.assertGreater(len(context.get_ca_certs()), 0)
+        if any(Path(candidate).is_file() for candidate in _SYSTEM_CA_BUNDLES):
+            self.assertGreater(len(context.get_ca_certs()), 50)
+
+    @unittest.skipUnless(Path("/etc/ssl/cert.pem").is_file(), "needs a Unix system CA bundle")
+    def test_explicit_bundle_wins(self) -> None:
+        from studybuddy.llm import _ssl_context
+
+        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as handle:
+            handle.write(Path("/etc/ssl/cert.pem").read_bytes())
+            bundle = handle.name
+        try:
+            self.assertGreater(len(_ssl_context(bundle).get_ca_certs()), 0)
+        finally:
+            Path(bundle).unlink(missing_ok=True)
+
+    def test_certificate_error_is_not_retried(self) -> None:
+        """A missing trust store is configuration, not a transient failure."""
+
+        from studybuddy.errors import LLMError
+
+        cert_error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+        url_error = urllib.error.URLError(cert_error)
+        with (
+            patch("studybuddy.llm.urllib.request.urlopen", side_effect=url_error) as fake,
+            self.assertRaises(LLMError) as ctx,
+        ):
+            LLM(api_key="k", max_retries=3).complete([Message(role="user", content="x")])
+
+        self.assertEqual(fake.call_count, 1, "certificate errors must not be retried")
+        self.assertIn("证书", str(ctx.exception))
+        self.assertIn("Install Certificates", str(ctx.exception))
 
 
 class TestRetries(unittest.TestCase):

@@ -370,7 +370,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 339 个测试
+make check       # ruff + mypy --strict + 342 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -389,6 +389,29 @@ PDF 生成器产出，含 Kangxi 部首），模型用 `ScriptedLLM` 或本地�
 
 欢迎 issue 和 PR，请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。一句话原则：
 **答案必须可核对，记忆必须可关闭。**
+
+## 常见问题
+
+**网页里提问报 `CERTIFICATE_VERIFY_FAILED`**
+
+macOS 上 python.org 安装的 Python 默认没有根证书。本项目会自动加载系统证书库
+（`/etc/ssl/cert.pem` 等），所以通常不需要处理；如果仍然报错：
+
+```bash
+# 任选其一
+/Applications/Python\ 3.12/Install\ Certificates.command
+export SSL_CERT_FILE=/etc/ssl/cert.pem
+```
+
+**Windows PowerShell 提示"禁止运行脚本"**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+**网页打不开 / 提示无法连接后端**
+
+服务进程已经退出。重新运行 `studybuddy ui`（或双击 `scripts/launch-macos.command`）。
 
 ## 已知限制
 
@@ -415,6 +438,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-339 offline tests, MIT licensed.
+342 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

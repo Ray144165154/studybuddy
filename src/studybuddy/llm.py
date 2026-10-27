@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 from .errors import LLMError, RetryExhausted
@@ -46,10 +47,44 @@ def _resolve_api_key(explicit: str | None) -> str:
     return "not-needed"
 
 
+# python.org builds on macOS ship without a CA store until the user runs
+# "Install Certificates.command", and containers often lack one too. Loading the
+# OS trust store is exactly what curl and browsers do, and it keeps HTTPS working
+# without asking a student to configure environment variables.
+_SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/cert.pem",  # macOS, Alpine, Debian (symlink)
+    "/etc/pki/tls/certs/ca-bundle.crt",  # RHEL / Fedora
+    "/opt/homebrew/etc/ca-certificates/cert.pem",  # Apple Silicon Homebrew
+    "/usr/local/etc/openssl@3/cert.pem",  # Intel Homebrew
+    "/usr/local/etc/openssl/cert.pem",
+)
+
+_CERT_HINT = (
+    "HTTPS 证书校验失败。macOS 上请运行 Python 安装包自带的 "
+    "Install Certificates.command，或设置 SSL_CERT_FILE=/etc/ssl/cert.pem 后重试。"
+)
+
+
 def _ssl_context(ca_bundle: str | None) -> ssl.SSLContext:
-    # create_default_context() honours SSL_CERT_FILE / SSL_CERT_DIR, which is the
-    # easiest way to fix "certificate verify failed" on macOS and inside containers.
-    return ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+    # create_default_context() honours SSL_CERT_FILE / SSL_CERT_DIR.
+    if ca_bundle:
+        return ssl.create_default_context(cafile=ca_bundle)
+
+    context = ssl.create_default_context()
+    for candidate in _SYSTEM_CA_BUNDLES:
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            context.load_verify_locations(cafile=str(path))
+        except (ssl.SSLError, OSError):
+            continue
+    return context
+
+
+def _is_certificate_error(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, ssl.SSLCertVerificationError)
 
 
 def _retry_after_seconds(headers: Any, attempt: int, base_delay: float) -> float:
@@ -177,6 +212,10 @@ class LLM:
                     raise RetryExhausted(attempt + 1, error) from exc
                 delay = _retry_after_seconds(exc.headers, attempt, self.retry_base_delay)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if _is_certificate_error(exc):
+                    # Retrying cannot fix a missing trust store, and four attempts
+                    # just make the user wait before seeing the real problem.
+                    raise LLMError(_CERT_HINT) from exc
                 last = exc
                 if attempt == self.max_retries:
                     raise RetryExhausted(attempt + 1, exc) from exc

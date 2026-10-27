@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-27
+
+### 修复
+
+- **macOS 上 HTTPS 证书校验失败**：python.org 安装的 Python 不自带根证书时，
+  网页端提问会报 `CERTIFICATE_VERIFY_FAILED`。现在会自动加载系统证书库
+  （`/etc/ssl/cert.pem`、Homebrew 的 ca-certificates 等），与 curl/浏览器的行为一致。
+- **证书错误不再重试 4 次**：这是配置问题而非瞬时故障，直接给出可操作的中文提示
+  （`Install Certificates.command` / `SSL_CERT_FILE`），不再让用户干等。
+
+### 新增
+
+- 文档新增「常见问题」：证书、PowerShell 执行策略、服务未启动。
+
 ## [0.6.2] - 2026-10-27
 
 一次针对 Web 界面的安全审查（独立审查员用真实 socket 复现）之后的修复。
