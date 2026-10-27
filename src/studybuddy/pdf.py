@@ -20,7 +20,19 @@ __all__ = ["PdfPage", "PdfDocument", "read_pdf"]
 _PAGE_NUMBER_LINE = re.compile(r"^[\s\-—–]*(\d{1,4}|第\s*\d{1,4}\s*页)[\s\-—–]*$")
 # Words split across a line break: "deriv-\native" -> "derivative".
 _HYPHEN_BREAK = re.compile(r"(\w)-\n(\w)")
-_MULTI_SPACE = re.compile(r"[ \t\u00a0]+")
+_MULTI_SPACE = re.compile(r"[ \t\u00a0\u3000]+")
+
+# Some PDF producers map CJK glyphs to Kangxi Radicals (⾃ U+2F83) or CJK
+# Compatibility Ideographs instead of the unified characters (自 U+81EA). That is
+# invisible to a human but fatal to retrieval: the bigram "⾃变" never matches "自变".
+# NFKC maps exactly those blocks back, without touching full-width punctuation.
+_COMPAT_RANGES = ((0x2E80, 0x2FDF), (0xF900, 0xFAFF), (0x2F800, 0x2FA1F))
+_COMPAT_TABLE = {
+    codepoint: unicodedata.normalize("NFKC", chr(codepoint))
+    for start, end in _COMPAT_RANGES
+    for codepoint in range(start, end + 1)
+    if unicodedata.normalize("NFKC", chr(codepoint)) != chr(codepoint)
+}
 _MULTI_NEWLINE = re.compile(r"\n{3,}")
 
 
@@ -60,6 +72,7 @@ class PdfDocument:
 def _clean(text: str) -> str:
     """Repair the usual PDF extraction artefacts without touching the words."""
     text = unicodedata.normalize("NFC", text)
+    text = text.translate(_COMPAT_TABLE)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u00ad", "")  # soft hyphen
     text = _HYPHEN_BREAK.sub(r"\1\2", text)

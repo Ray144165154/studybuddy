@@ -42,7 +42,7 @@ def detect_section(line: str) -> str | None:
         match = pattern.match(stripped)
         if match:
             number = match.group(1).strip()
-            title = (match.group(2) or "").strip(" .．、:")
+            title = (match.group(2) or "").strip(" .．、:：")
             title = re.sub(r"\s+", " ", title)[:40]
             return f"{number} {title}".strip()
 

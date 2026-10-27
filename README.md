@@ -20,6 +20,11 @@
 2. **要能跨教材** —— 「拉格朗日中值定理和柯西中值定理的关系」可能同时需要高数书和数分书。
 3. **要记得住你** —— 你薄弱的知识点、偏好的讲解方式、上次问过什么，跨会话保留，并按遗忘曲线安排复习。
 
+**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引；
+章节标题同时识别 `第三章`、`3.1`、`Chapter 3`、`Section 2.1` 四种写法。
+中文 PDF 常见的字符合成问题（Kangxi 部首 `⾃` 代替 `自`）会被自动归一化，
+否则「自变量」永远搜不到「⾃变量」。
+
 ## 效果
 
 ```text
@@ -169,12 +174,12 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 141 个测试
+make check       # ruff + mypy --strict + 156 个测试
 make demo        # 离线端到端演示
 ```
 
-测试全部离线：PDF 用一个自己生成的合法 PDF 夹具，模型用 `ScriptedLLM` 或本地假
-服务端，不花钱也不联网。
+测试全部离线：中英文各有一个真实 PDF 夹具（`tests/fixtures/zh_sample.pdf` 由真实
+PDF 生成器产出，含 Kangxi 部首），模型用 `ScriptedLLM` 或本地假服务端，不花钱也不联网。
 
 ## 路线图
 
@@ -192,6 +197,8 @@ make demo        # 离线端到端演示
 ## 已知限制
 
 - 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR。
+- 中文检索是词法匹配（字符二元组），同义改写（「求导」vs「微分」）未必能召回，
+  这一点需要向量检索才能补上。
 - 中文检索用字符二元组，对术语准确但语义泛化能力弱于向量检索。
 - 一次问答会发两轮请求（回答 + 记忆抽取），token 成本约为普通问答的 1.5 倍。
 
@@ -208,6 +215,7 @@ PDF textbooks, ask questions across all of them, and get answers with page-level
 citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
-model calls. Any OpenAI-compatible endpoint works. 141 offline tests, MIT licensed.
+model calls. Chinese and English textbooks are both supported and tested.
+156 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
