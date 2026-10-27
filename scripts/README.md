@@ -23,5 +23,26 @@ studybuddy add-text pages.jsonl -t "概率论基础" -c 概率论
 DPI 建议 150–200：150 约 0.35 秒/页，200 更准但慢一倍。
 
 > 注意：Vision 在沙箱受限的环境里可能报 `unknownError`，需要在正常用户会话下运行。
-> Linux / Windows 用户请用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的
-> PDF，然后直接 `studybuddy add book.pdf`。
+
+### Windows / Linux
+
+用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的 PDF，再直接导入：
+
+```powershell
+# Windows
+winget install --id UB-Mannheim.TesseractOCR
+pip install ocrmypdf
+ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
+studybuddy add 概率论基础-ocr.pdf -c 概率论
+```
+
+```bash
+# Linux
+sudo apt install tesseract-ocr tesseract-ocr-chi-sim
+pip install ocrmypdf
+ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
+studybuddy add 概率论基础-ocr.pdf -c 概率论
+```
+
+> 注：本项目只提供 macOS 的 OCR 脚本；Windows/Linux 不内置 OCR 引擎，用上面这个
+> 成熟工具即可。缺 OCR 时 `studybuddy add` 会明确报错并提示，不会导入空书。

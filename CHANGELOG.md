@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-27
+
+### 变更
+
+- **macOS 与 Windows 正式纳入 CI**：新增 `macos-latest` / `windows-latest` 任务，
+  跑 ruff、mypy --strict、299 个测试、离线 demo 和 Web UI 导入检查。
+- **Windows 控制台编码**：输出被重定向（管道/CI/写文件）时自动切到 UTF-8，避免默认
+  代码页把中文打断；交互式控制台保持原样（Windows 走 UTF-16 WinAPI）。
+- 文档补充 Windows 安装步骤（PowerShell、执行策略、`chcp 65001`）与
+  Windows/Linux 的 OCR 方案（ocrmypdf + tesseract）。
+
 ## [0.6.0] - 2026-10-27
 
 ### 新增

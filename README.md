@@ -119,6 +119,31 @@ make demo
 API Key 解析顺序：`--api-key` → `STUDYBUDDY_API_KEY` → `OPENAI_API_KEY` →
 `DEEPSEEK_API_KEY` → `OPENROUTER_API_KEY`。本地端点不校验鉴权时会自动用占位符。
 
+## 跨平台
+
+CI 在 **macOS、Windows、Linux** 三种系统上真跑测试（不只是 Linux）：
+
+| 系统 | 状态 | 说明 |
+| --- | --- | --- |
+| macOS | ✅ CI | 附带 Vision OCR 脚本（`scripts/ocr_macos.swift`） |
+| Windows | ✅ CI | 全流程可用；OCR 建议用 ocrmypdf 或 Mathpix |
+| Linux | ✅ CI | 同上，OCR 用 ocrmypdf 最省事 |
+
+代码里没有平台分支：路径全部用 `pathlib`，不调用外部命令。唯一需要留意的是终端编码——
+输出被重定向时（管道、CI、写文件）会自动切到 UTF-8，避免 Windows 默认代码页把中文打断。
+
+数据目录默认是**当前目录下的 `.studybuddy/`**，三个系统一致。可以改成绝对路径：
+
+```powershell
+# Windows
+$env:STUDYBUDDY_ROOT = "$HOME\Documents\studybuddy-data\library"
+```
+
+```bash
+# macOS / Linux
+export STUDYBUDDY_ROOT="$HOME/Documents/studybuddy-data/library"
+```
+
 ## 网页界面
 
 ```bash
@@ -229,8 +254,17 @@ swiftc -O scripts/ocr_macos.swift -o /tmp/ocr_macos \
 studybuddy add-text pages.jsonl -t "概率论基础" -c 概率论
 ```
 
-Linux / Windows 用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的 PDF，
-再 `studybuddy add` 即可。详见 [scripts/README.md](scripts/README.md)。
+**Windows / Linux** 用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的 PDF，
+再 `studybuddy add` 即可：
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR   # 或 choco install tesseract
+pip install ocrmypdf
+ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
+studybuddy add 概率论基础-ocr.pdf -c 概率论
+```
+
+详见 [scripts/README.md](scripts/README.md)。
 
 ## 工作原理
 

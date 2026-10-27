@@ -24,6 +24,21 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 
+def _safe_console() -> None:
+    """Make redirected output UTF-8 so Chinese never crashes on Windows.
+
+    An attached Windows console already speaks UTF-16 through the WinAPI (PEP 528),
+    so it is left alone. Only redirected streams (pipes, CI logs, files) are forced
+    to UTF-8, where the default ANSI code page would raise UnicodeEncodeError.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _supports_color() -> bool:
     return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
@@ -342,6 +357,7 @@ def _cmd_stats(buddy: StudyBuddy, _args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _safe_console()
     parser = _build_parser()
     args = parser.parse_args(argv)
 
