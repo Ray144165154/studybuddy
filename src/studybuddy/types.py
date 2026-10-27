@@ -169,6 +169,13 @@ class Chunk:
     text: str
     course: str = ""
     nav: bool = False
+    formula_ratio: float = 0.0
+    ocr_noise: float = 0.0
+
+    @property
+    def unreliable(self) -> bool:
+        """True when OCR likely damaged this passage (formula-dense or garbled)."""
+        return self.formula_ratio >= 0.25 or self.ocr_noise >= 0.02
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -180,6 +187,8 @@ class Chunk:
             "text": self.text,
             "course": self.course,
             "nav": self.nav,
+            "formula_ratio": self.formula_ratio,
+            "ocr_noise": self.ocr_noise,
         }
 
     @classmethod
@@ -193,6 +202,8 @@ class Chunk:
             text=str(data.get("text", "")),
             course=str(data.get("course", "")),
             nav=bool(data.get("nav", False)),
+            formula_ratio=float(data.get("formula_ratio") or 0.0),
+            ocr_noise=float(data.get("ocr_noise") or 0.0),
         )
 
     @property

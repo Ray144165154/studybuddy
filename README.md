@@ -191,7 +191,16 @@ PDFError: no selectable text found in 概率论基础.pdf.
 It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again.
 ```
 
-OCR 之后用 `add-text` 导入即可。macOS 上仓库自带一个 Vision OCR 脚本（中文识别质量好，
+OCR 之后用 `add-text` 导入即可。
+
+**公式降噪**：数学扫描件的公式几乎必然被 OCR 认错（`σ`→`o`、`P(A|B)`→`P（AlB）`）。
+每个片段会记录两个信号——公式行占比、以及"中文教材里不该出现的假名"密度（`ん`/`で`
+通常是被认错的汉字或符号）。命中任一信号时，该片段送进 prompt 会附带一句提示：
+
+> （提示：该片段公式较多，OCR 可能失真；引用公式、条件或数值前，请说明不确定并要求读者核对原书。）
+
+这样模型会主动说"这里看不清、建议核对第 398 页"，而不是把乱码当成公式硬解释。
+实测一本 422 页的扫描教材里 29% 的片段被标记。macOS 上仓库自带一个 Vision OCR 脚本（中文识别质量好，
 不需要装 tesseract）：
 
 ```bash
@@ -267,7 +276,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 264 个测试
+make check       # ruff + mypy --strict + 275 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -312,6 +321,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-264 offline tests, MIT licensed.
+275 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

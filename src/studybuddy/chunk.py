@@ -11,7 +11,51 @@ import re
 
 from .types import Book, Chunk
 
-__all__ = ["detect_section", "Chunker", "chunk_document", "is_navigation_text"]
+__all__ = [
+    "detect_section",
+    "Chunker",
+    "chunk_document",
+    "is_navigation_text",
+    "formula_ratio",
+    "ocr_noise_ratio",
+]
+
+# Kana has no business in a Chinese textbook: its presence means characters were
+# misrecognised (ん/で/だ in place of Chinese glyphs or math symbols).
+_KANA = re.compile(r"[\u3041-\u3096\u30a1-\u30fa]")
+
+_MATH_CHARS = frozenset("∈∑∏∫√≤≥≠≈∞→←∂∇±×÷⋅·∘∧∨¬∀∃⊂⊃∪∩∅=<>^_/\\|()[]{}+-*")
+
+
+def _looks_like_formula(line: str) -> bool:
+    """True for a line that is mostly mathematics rather than prose."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    cjk = sum(1 for char in stripped if "\u4e00" <= char <= "\u9fff")
+    if cjk >= 10:
+        return False
+    math = sum(1 for char in stripped if char in _MATH_CHARS)
+    latin = sum(1 for char in stripped if char.isascii() and char.isalpha())
+    if math >= 4:
+        return True
+    return latin >= 5 and cjk <= 2
+
+
+def ocr_noise_ratio(text: str) -> float:
+    """Density of impossible characters (kana) per character of text."""
+    if not text:
+        return 0.0
+    return round(len(_KANA.findall(text)) / len(text), 4)
+
+
+def formula_ratio(text: str) -> float:
+    """Share of lines that look like formulas -- used to warn about OCR damage."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return 0.0
+    return round(sum(1 for line in lines if _looks_like_formula(line)) / len(lines), 3)
+
 
 _NAV_MARKERS = ("目录", "内容索引", "符号索引", "人名索引", "名词索引", "索引")
 _NUM_ENTRY = re.compile(r"^\s*(第?\s*\d+(\s*[.．]\s*\d+)*)\s+\S")
@@ -134,6 +178,8 @@ class Chunker:
             text=text,
             course=self.book.course,
             nav=nav,
+            formula_ratio=formula_ratio(text),
+            ocr_noise=ocr_noise_ratio(text),
         )
         self._ordinal += 1
         return chunk

@@ -146,6 +146,28 @@ class TestAsk(StudyTestCase):
         self.assertIn("什么是导数", prompt)
         self.assertIn("教材片段", prompt)
 
+    def test_prompt_warns_about_unreliable_ocr(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="1.1 导数",
+                text="定义：导数是瞬时变化率。",
+                formula_ratio=0.5,
+            )
+        ]
+        self.library.save()
+        llm = ScriptedLLM(says("答 [1]"), says(MEMORY_JSON))
+        StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory).ask("什么是导数？")
+        self.assertIn("OCR 可能失真", user_prompt(llm, 0))
+
+    def test_prompt_has_no_warning_for_clean_text(self) -> None:
+        llm = ScriptedLLM(says("答 [1]"), says(MEMORY_JSON))
+        StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory).ask("什么是导数？")
+        self.assertNotIn("OCR 可能失真", user_prompt(llm, 0))
+
     def test_prompt_includes_profile(self) -> None:
         self.memory.set_profile(major="计算机科学与技术", courses=["高等数学"])
         llm = ScriptedLLM(says("答 [1]"), says(MEMORY_JSON))

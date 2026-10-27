@@ -318,6 +318,11 @@ class StudyBuddy:
         for source in sources:
             blocks.append(f"[{source.index}] {source.citation}")
             blocks.append(source.chunk.text.strip()[:1600])
+            if source.chunk.unreliable:
+                blocks.append(
+                    "（提示：该片段公式较多，OCR 可能失真；引用公式、条件或数值前，"
+                    "请说明不确定并要求读者核对原书。）"
+                )
             blocks.append("")
 
         blocks.append("【问题】")

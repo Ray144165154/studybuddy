@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from studybuddy.chunk import Chunker, chunk_document, detect_section, is_navigation_text
+from studybuddy.chunk import (
+    Chunker,
+    chunk_document,
+    detect_section,
+    formula_ratio,
+    is_navigation_text,
+    ocr_noise_ratio,
+)
 from studybuddy.types import Book
 
 
@@ -73,6 +80,54 @@ class TestNavigationPages(unittest.TestCase):
 
     def test_section_trailing_decoration_is_stripped(self) -> None:
         self.assertEqual(detect_section("第1章 概率与测度・"), "第1章 概率与测度")
+
+
+class TestOcrQualitySignals(unittest.TestCase):
+    def test_formula_ratio_detects_formula_lines(self) -> None:
+        text = "∑_{k=1}^{n} ξ_k = f(x) + O(n)\n定义：随机变量是样本空间上的可测函数。"
+        self.assertGreater(formula_ratio(text), 0.0)
+
+    def test_formula_ratio_prose_is_zero(self) -> None:
+        self.assertEqual(formula_ratio("定理：设随机变量序列独立同分布，则其部分和服从大数定律。"), 0.0)
+
+    def test_ocr_noise_detects_kana(self) -> None:
+        self.assertGreater(ocr_noise_ratio("随机变量ん 件合格品だ"), 0.0)
+
+    def test_ocr_noise_ignores_katakana_middle_dot(self) -> None:
+        self.assertEqual(ocr_noise_ratio("第一章・概率与测度"), 0.0)
+
+    def test_clean_text_has_no_noise(self) -> None:
+        self.assertEqual(ocr_noise_ratio("条件概率的定义"), 0.0)
+
+    def test_empty(self) -> None:
+        self.assertEqual(formula_ratio(""), 0.0)
+        self.assertEqual(ocr_noise_ratio(""), 0.0)
+
+    def test_chunk_marks_unreliable_when_garbled(self) -> None:
+        chunks = Chunker(book()).feed_page(1, "随机变量ん だ で の が を に は も と や か よ ね な")
+        self.assertTrue(any(chunk.unreliable for chunk in chunks))
+
+    def test_chunk_is_reliable_for_clean_prose(self) -> None:
+        chunks = Chunker(book()).feed_page(1, "条件概率的定义与性质，独立性判定方法。" * 3)
+        self.assertFalse(any(chunk.unreliable for chunk in chunks))
+
+    def test_metadata_round_trip(self) -> None:
+        from studybuddy.types import Chunk
+
+        chunk = Chunk(
+            id="a",
+            book_id="b",
+            book_title="t",
+            page=1,
+            section="s",
+            text="x",
+            formula_ratio=0.4,
+            ocr_noise=0.03,
+        )
+        restored = Chunk.from_dict(chunk.to_dict())
+        self.assertAlmostEqual(restored.formula_ratio, 0.4)
+        self.assertAlmostEqual(restored.ocr_noise, 0.03)
+        self.assertTrue(restored.unreliable)
 
 
 class TestChunker(unittest.TestCase):
