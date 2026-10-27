@@ -14,6 +14,8 @@
   在 CPU 上做语义检索。解决 DeepSeek 没有 `/embeddings` 端点、又想用混合检索的问题。
 - 向量索引会记录来源（`provider: local|api`），换设备/重建时自动匹配正确的后端。
 - `--embed-provider {auto,api,local}` 与 `STUDYBUDDY_EMBED_PROVIDER`。
+- **查询改写**：`studybuddy ask --rewrite` 先把口语问题改写成教材式检索词再检索，
+  默认关闭（会多一次小调用）。改写失败不影响正常检索。
 
 ### 设计说明
 

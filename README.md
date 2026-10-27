@@ -91,6 +91,7 @@ make demo
 | `studybuddy books` | 列出已导入教材 |
 | `studybuddy ask "问题"` | 跨所有教材检索并回答，带页码引用 |
 | `studybuddy ask "问题" --book 高等数学` | 限定在某本教材里问 |
+| `studybuddy ask "问题" --rewrite` | 先让模型改写检索式（多一次小调用，难问题更准） |
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
@@ -134,6 +135,15 @@ studybuddy index                          # 首次会下载 ~100MB 模型并缓�
 
 用的是 `BAAI/bge-small-zh-v1.5`（中文小模型），CPU 上每页几十毫秒。
 国内网络建议先设镜像：`export HF_ENDPOINT=https://hf-mirror.com`。
+
+### 查询改写（可选，补齐"问法不同"）
+
+```bash
+studybuddy ask "为什么求导和微分是一回事" --rewrite
+```
+
+长问题或"关系/区别"类问题，会先花一次很小的调用把口语改写成教材式检索词
+（"导数 微分 关系"），再检索。默认关闭，因为它会多一次 API 调用。
 
 ### API 模式（任意 OpenAI 兼容端点）
 
@@ -257,7 +267,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 257 个测试
+make check       # ruff + mypy --strict + 264 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -302,6 +312,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-257 offline tests, MIT licensed.
+264 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

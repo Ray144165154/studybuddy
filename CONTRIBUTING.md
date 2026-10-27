@@ -23,7 +23,7 @@ pip install -e ".[dev]"
 提交前请确保：
 
 ```bash
-make check     # ruff + mypy --strict + 257 个测试
+make check     # ruff + mypy --strict + 264 个测试
 make demo      # 离线端到端演示还能跑
 ```
 
