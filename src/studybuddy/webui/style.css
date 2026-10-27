@@ -117,6 +117,20 @@ aside {
   vertical-align: 1px;
 }
 
+.answer table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  font-size: 14px;
+}
+.answer th, .answer td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.answer th { background: var(--bg); font-weight: 600; }
+
 .sources { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .sources .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .sources ol { margin: 0; padding-left: 18px; font-size: 13px; }

@@ -56,6 +56,28 @@ $ studybuddy memory
 
 ## 5 分钟上手
 
+### 懒人方式：一键脚本
+
+不会敲命令的话，用仓库里的安装脚本，它会自动找 Python、建虚拟环境、装好依赖：
+
+```powershell
+# Windows（PowerShell）
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+# 装完直接打开界面：
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Launch
+```
+
+```bash
+# macOS：在 Finder 里双击 scripts/install-macos.command
+# 或者：
+bash scripts/install-macos.command
+```
+
+macOS 装完以后随时双击 `scripts/launch-macos.command` 就能启动界面。脚本都是幂等的，
+重复运行不会出问题，也不需要管理员权限。
+
+### 手动方式
+
 ```bash
 git clone https://github.com/Ray144165154/studybuddy.git
 cd studybuddy
@@ -158,7 +180,21 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 - **记忆**：画像、薄弱点、跟进话题、今天该复习什么，可一键「记住了/没记住」调整间隔重复
 - **设置**：模型、接口地址、API Key。**Key 只存在进程内存里，不写磁盘**，重启即失效
 
-默认只监听 `127.0.0.1`；界面是本地单用户工具，没有账号体系。
+### 安全边界
+
+界面是本地单用户工具，没有账号体系，但**浏览器可以被诱导去访问 localhost**，所以：
+
+| 风险 | 处理 |
+| --- | --- |
+| 静态文件路径穿越（`GET /../../etc/passwd`） | 解析后校验必须位于 `webui/` 内，否则 404 |
+| 上传文件名穿越（`name: "../x.pdf"` 或绝对路径） | 只接受纯文件名，含 `/`、`\`、`..` 直接 400 |
+| 跨站请求伪造（CSRF） | POST 必须是 `application/json` + loopback `Origin`；`text/plain` 一律 415 |
+| DNS rebinding | 校验 `Host` 必须是 loopback，否则 403 |
+| 请求体耗尽内存 | 上限 2MB（超大返回 413），连接超时 20 秒 |
+| 错误信息泄露内部路径 | 500 只返回通用文案，细节留在终端日志 |
+| API Key | 只存在进程内存，不写盘、不回显 |
+
+默认监听 `127.0.0.1`；用 `studybuddy ui --host 0.0.0.0` 暴露到局域网时会在终端给出警告。
 
 ## 混合检索（可选）
 
@@ -334,7 +370,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 299 个测试
+make check       # ruff + mypy --strict + 339 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -379,6 +415,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-299 offline tests, MIT licensed.
+339 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

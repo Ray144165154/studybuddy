@@ -3,12 +3,18 @@
 Design constraints, in order of importance:
 
 1. **No new dependencies.** ``http.server`` plus a static HTML/CSS/JS bundle.
-2. **Local by default.** Binds to 127.0.0.1; the API key lives in process memory
-   only and is never written to disk.
-3. **Thin. It calls :class:`StudyBuddy` and returns JSON -- no business logic here.
+2. **Local by default.** Binds to 127.0.0.1, rejects non-loopback Host/Origin, and
+   keeps the API key in process memory only.
+3. **Thin.** It calls :class:`StudyBuddy` and returns JSON -- no business logic here.
 
-The transport is deliberately boring: JSON in, JSON out. Uploads are base64 in a
-JSON body so multipart parsing (and its bugs) never enters the codebase.
+Security posture (this is a localhost tool, but a browser can still be tricked into
+talking to it):
+
+* static paths are resolved and must stay inside ``webui/``
+* uploaded filenames must be plain basenames -- no separators, no ``..``
+* POST requires ``Content-Type: application/json`` and a bounded body, which also
+  defeats cross-site "simple requests" that skip CORS preflight
+* errors never echo tracebacks; user mistakes are 400, not 500
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,13 +30,16 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from .errors import LLMError, StudyError
+from .errors import AgentError, LLMError, StudyError
 from .study import StudyBuddy
 
 __all__ = ["WebApp", "serve"]
 
-_STATIC_DIR = Path(__file__).parent / "webui"
+_STATIC_DIR = (Path(__file__).parent / "webui").resolve()
 _MAX_UPLOAD_BYTES = 80 * 1024 * 1024
+_MAX_BODY_BYTES = 2 * 1024 * 1024
+_MAX_QUESTION_CHARS = 8000
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -40,6 +50,35 @@ _CONTENT_TYPES = {
 
 class StudyErrorBadRequest(Exception):
     """Raised for bad user input; mapped to HTTP 400."""
+
+
+def _host_allowed(value: str | None) -> bool:
+    """True for loopback Host/Origin values (handles ``host:port`` and ``[::1]``)."""
+    if not value:
+        return False
+    host = value.strip()
+    if host.startswith("["):  # IPv6 literal, e.g. [::1]:8765
+        host = host[1 : host.find("]")] if "]" in host else host
+    elif host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    if host in _LOOPBACK_NAMES:
+        return True
+    return host.startswith("127.")
+
+
+def _origin_allowed(origin: str) -> bool:
+    if origin == "null":
+        return False
+    parsed = urlparse(origin)
+    return parsed.scheme in ("http", "https") and _host_allowed(parsed.netloc)
+
+
+def _int_param(value: Any, field: str, *, low: int, high: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise StudyErrorBadRequest(f"{field} 必须是整数") from exc
+    return max(low, min(parsed, high))
 
 
 class WebApp:
@@ -95,6 +134,8 @@ class WebApp:
         question = (question or "").strip()
         if not question:
             raise StudyErrorBadRequest("问题是空的")
+        if len(question) > _MAX_QUESTION_CHARS:
+            raise StudyErrorBadRequest(f"问题太长（上限 {_MAX_QUESTION_CHARS} 字）")
         if not self.buddy.library.chunks:
             raise StudyError("书库是空的 -- 先在「书库」里导入一本教材")
 
@@ -124,7 +165,12 @@ class WebApp:
         }
 
     def add_book(self, payload: dict[str, Any]) -> dict[str, Any]:
-        name = str(payload.get("name") or "教材.pdf")
+        raw_name = str(payload.get("name") or "教材.pdf")
+        # The name reaches the filesystem: accept a basename and nothing else.
+        if raw_name in {".", ".."} or "/" in raw_name or "\\" in raw_name or "\x00" in raw_name:
+            raise StudyErrorBadRequest("文件名不合法（不允许包含路径分隔符）")
+        name = Path(raw_name).name
+
         encoded = payload.get("data")
         if not isinstance(encoded, str) or not encoded:
             raise StudyErrorBadRequest("没有收到文件内容")
@@ -136,16 +182,23 @@ class WebApp:
         if len(raw) > _MAX_UPLOAD_BYTES:
             raise StudyErrorBadRequest("文件太大（上限 80MB）")
 
-        temporary = Path(self.buddy.root) / "uploads" / name
-        temporary.parent.mkdir(parents=True, exist_ok=True)
+        upload_dir = (Path(self.buddy.root) / "uploads").resolve()
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        temporary = (upload_dir / name).resolve()
+        if not temporary.is_relative_to(upload_dir):
+            raise StudyErrorBadRequest("文件名不合法（不允许包含路径分隔符）")
         temporary.write_bytes(raw)
 
-        with self._lock:
-            book = self.buddy.add_book(
-                temporary,
-                course=str(payload.get("course") or ""),
-                title=str(payload.get("title") or "") or None,
-            )
+        try:
+            with self._lock:
+                book = self.buddy.add_book(
+                    temporary,
+                    course=str(payload.get("course") or ""),
+                    title=str(payload.get("title") or "") or None,
+                )
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
         return {"book": book.to_dict()}
 
     def add_text(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -165,13 +218,17 @@ class WebApp:
 
     def configure(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Update the model settings for this process only (the key is never stored)."""
-        if "model" in payload and str(payload["model"]).strip():
+        for field in ("model", "base_url", "api_key"):
+            if field in payload and not isinstance(payload[field], str):
+                raise StudyErrorBadRequest(f"{field} 必须是字符串")
+
+        if str(payload.get("model", "")).strip():
             self.buddy.model = str(payload["model"]).strip()
             self.buddy.llm.model = self.buddy.model
-        if "base_url" in payload and str(payload["base_url"]).strip():
+        if str(payload.get("base_url", "")).strip():
             base = str(payload["base_url"]).strip().rstrip("/")
             self.buddy.llm.base_url = base
-        if "api_key" in payload and str(payload["api_key"]).strip():
+        if str(payload.get("api_key", "")).strip():
             self.buddy.llm.api_key = str(payload["api_key"]).strip()
         return {"ok": True, "llm_ready": self.llm_ready}
 
@@ -196,12 +253,12 @@ class WebApp:
         return {"ok": True, "profile": self.buddy.memory.profile.to_dict()}
 
     def quiz(self, payload: dict[str, Any]) -> dict[str, Any]:
-        count = int(payload.get("count") or 5)
+        count = _int_param(payload.get("count", 5), "count", low=1, high=10)
         with self._lock:
             quiz = self.buddy.quiz(
                 book=str(payload["book"]) if payload.get("book") else None,
                 topic=str(payload["topic"]) if payload.get("topic") else None,
-                count=max(1, min(count, 10)),
+                count=count,
             )
         return {
             "topic": quiz.topic,
@@ -232,9 +289,10 @@ class WebApp:
         state = self.buddy.grade(topic, correct=bool(payload.get("correct")))
         return {"ok": True, "topic": state.name, "mastery": state.mastery, "due": state.due}
 
-    def review(self, limit: int = 3) -> dict[str, Any]:
+    def review(self, limit: Any = 3) -> dict[str, Any]:
+        count = _int_param(limit, "limit", low=1, high=10)
         with self._lock:
-            items = self.buddy.review(limit=max(1, min(limit, 10)))
+            items = self.buddy.review(limit=count)
         return {
             "items": [
                 {"topic": item.topic, "mastery": item.mastery, "question": item.question} for item in items
@@ -244,7 +302,11 @@ class WebApp:
     # -- routing -------------------------------------------------------------------
 
     def dispatch(
-        self, method: str, path: str, payload: dict[str, Any] | None, query: dict[str, list[str]]
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None,
+        query: dict[str, list[str]],
     ) -> tuple[int, dict[str, Any]]:
         payload = payload or {}
         try:
@@ -253,7 +315,7 @@ class WebApp:
             if method == "GET" and path == "/api/memory":
                 return 200, self.memory_payload()
             if method == "GET" and path == "/api/review":
-                return 200, self.review(int(query.get("limit", ["3"])[0]))
+                return 200, self.review(query.get("limit", ["3"])[0])
             if method == "POST" and path == "/api/ask":
                 return 200, self.ask(
                     str(payload.get("question") or ""),
@@ -279,17 +341,19 @@ class WebApp:
             return 404, {"error": f"unknown endpoint: {method} {path}"}
         except StudyErrorBadRequest as exc:
             return 400, {"error": str(exc)}
-        except StudyError as exc:
-            return 400, {"error": str(exc)}
         except LLMError as exc:
             return 502, {"error": f"模型调用失败: {exc}"}
-        except Exception as exc:  # noqa: BLE001 - the UI needs a message, not a traceback
-            return 500, {"error": f"{type(exc).__name__}: {exc}"}
+        except AgentError as exc:
+            # PDFError / LibraryError / StudyError: the user's input or data is at fault.
+            return 400, {"error": str(exc)}
+        except Exception:  # noqa: BLE001 - never leak internals to the client
+            return 500, {"error": "服务器内部错误，详情见终端日志"}
 
 
 class _Handler(BaseHTTPRequestHandler):
     app: WebApp
     server_version = f"studybuddy/{__version__}"
+    timeout = 20  # a stalled client must not hold a thread forever
 
     def log_message(self, *args: Any) -> None:  # keep the terminal quiet
         pass
@@ -302,6 +366,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -313,37 +378,92 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", _CONTENT_TYPES.get(path.suffix, "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+
+    def _host_ok(self) -> bool:
+        return _host_allowed(self.headers.get("Host"))
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is None:  # curl and other non-browser clients
+            return True
+        return _origin_allowed(origin)
 
     # -- verbs ---------------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        if not self._host_ok():
+            self._send_json(403, {"error": "host not allowed"})
+            return
+
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
             status, payload = self.app.dispatch("GET", parsed.path, None, parse_qs(parsed.query))
             self._send_json(status, payload)
             return
-        if parsed.path in ("/", "/index.html"):
-            self._send_file(_STATIC_DIR / "index.html")
+
+        relative = parsed.path.lstrip("/") or "index.html"
+        try:
+            candidate = (_STATIC_DIR / relative).resolve()
+            candidate.relative_to(_STATIC_DIR)  # containment: no escaping webui/
+        except (ValueError, OSError):
+            self._send_json(404, {"error": "not found"})
             return
-        self._send_file(_STATIC_DIR / parsed.path.lstrip("/"))
+        self._send_file(candidate)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
-        parsed = urlparse(self.path)
-        length = int(self.headers.get("Content-Length") or 0)
+        if not self._host_ok():
+            self._send_json(403, {"error": "host not allowed"})
+            return
+        if not self._origin_ok():
+            self._send_json(403, {"error": "origin not allowed"})
+            return
+
+        # Requiring a JSON content type blocks cross-site "simple requests", which
+        # skip CORS preflight and could otherwise drive this API.
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            self._send_json(415, {"error": "Content-Type 必须是 application/json"})
+            return
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self._send_json(411, {"error": "缺少 Content-Length"})
+            return
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "Content-Length 非法"})
+            return
+        if length < 0:
+            self._send_json(400, {"error": "Content-Length 非法"})
+            return
+        if length > _MAX_BODY_BYTES:
+            self._send_json(413, {"error": "请求体过大"})
+            return
+
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {"error": "请求体不是合法 JSON"})
             return
         if not isinstance(payload, dict):
             self._send_json(400, {"error": "请求体必须是 JSON 对象"})
             return
 
-        status, response = self.app.dispatch("POST", parsed.path, payload, parse_qs(parsed.query))
+        status, response = self.app.dispatch("POST", urlparse(self.path).path, payload, {})
         self._send_json(status, response)
+
+    def _method_not_allowed(self) -> None:
+        self._send_json(405, {"error": "method not allowed"})
+
+    do_PUT = _method_not_allowed  # noqa: N815
+    do_DELETE = _method_not_allowed  # noqa: N815
+    do_PATCH = _method_not_allowed  # noqa: N815
+    do_OPTIONS = _method_not_allowed  # noqa: N815
 
 
 def serve(
@@ -361,6 +481,14 @@ def serve(
 
     print(f"studybuddy {__version__}  →  {url}", flush=True)
     print(f"数据目录: {buddy.library.root}", flush=True)
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"警告: 正在监听 {host}，局域网内其他设备可以访问这个界面。"
+            "它没有登录机制，请只在可信网络里这样做。",
+            file=sys.stderr,
+            flush=True,
+        )
     if not app.llm_ready:
         print("提示: 还没有配置模型。在页面右上角「设置」里填 API Key（只存在内存里）。", flush=True)
     print("按 Ctrl-C 退出", flush=True)

@@ -2,6 +2,29 @@
 
 辅助工具，不属于运行时依赖。
 
+## 一键安装
+
+| 文件 | 平台 | 作用 |
+| --- | --- | --- |
+| `install-windows.ps1` | Windows | 找 Python 3.10+、建 `.venv`、`pip install -e .`；加 `-Launch` 装完直接开界面 |
+| `install-macos.command` | macOS | 同上，双击即可；装完会问要不要立刻启动界面 |
+| `launch-macos.command` | macOS | 日常启动器：双击打开网页界面（可传 `--port 9000` 等参数） |
+
+三个脚本都是幂等的（重复运行安全）、不需要管理员权限、不会下载或执行远端脚本。
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Launch
+```
+
+```bash
+# macOS
+bash scripts/install-macos.command
+```
+
+> 如果 PowerShell 报"禁止运行脚本"：
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+
 ## ocr_macos.swift —— 扫描版 PDF 的 OCR
 
 本项目不内置 OCR 引擎：扫描件会被 `read_pdf` 明确拒绝，并提示先做 OCR。

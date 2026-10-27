@@ -5,6 +5,31 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-27
+
+一次针对 Web 界面的安全审查（独立审查员用真实 socket 复现）之后的修复。
+
+### 安全修复
+
+- **HIGH — 静态文件路径穿越**：`GET /../../../pyproject.toml` 可读取 `webui/` 之外的
+  任意文件（包括 `/etc/passwd`）。现在解析后强制校验路径位于 `webui/` 内。
+- **HIGH — 上传文件名穿越**：`add-book` 的 `name` 未清洗，`../x.pdf` 写到数据根目录、
+  绝对路径可写到任意位置。现在只接受纯文件名。
+- **MEDIUM — CSRF / DNS rebinding**：POST 现在必须 `Content-Type: application/json`
+  且 `Origin` 为 loopback；`Host` 必须是 loopback。此前任意网页可用 `text/plain`
+  简单请求改配置、清记忆。
+- **MEDIUM — 请求体无上限**：POST body 上限 2MB，连接超时 20 秒。
+- **MEDIUM — 错误信息泄露**：500 只返回通用文案；用户输入错误（非法 PDF、`count=abc`、
+  非法 `limit`）改为 400 而不是 500；上传失败会清理临时文件。
+- **LOW**：非法/负数 `Content-Length` 返回 400；缺失返回 411；未支持方法返回 405 JSON；
+  question 上限 8000 字；`configure` 拒绝非字符串字段。
+
+### 测试
+
+- 用户输入错误统一映射为 400 的断言；`tests/test_web.py` 的 500 断言改为"不泄露内部信息"。
+- 新增 `tests/test_web_security.py`（40 个用例）：路径穿越、文件名穿越、CSRF/Origin、
+  DNS rebinding、请求体上限、方法限制、错误信息泄露、并发串行化、API key 不落盘。
+
 ## [0.6.1] - 2026-10-27
 
 ### 变更

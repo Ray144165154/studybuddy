@@ -33,21 +33,58 @@ function renderMarkdown(text) {
   const lines = escapeHtml(text).split("\n");
   let html = "";
   let list = null;
+  let table = null;
+
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  const closeTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table;
+    html += "<table><thead><tr>";
+    for (const cell of head) html += `<th>${inline(cell)}</th>`;
+    html += "</tr></thead><tbody>";
+    for (const row of rows) {
+      html += "<tr>";
+      for (const cell of row) html += `<td>${inline(cell)}</td>`;
+      html += "</tr>";
+    }
+    html += "</tbody></table>";
+    table = null;
+  };
+
+  const splitRow = (line) =>
+    line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+
   for (const raw of lines) {
     const line = raw.trimEnd();
-    if (!line.trim()) { if (list) { html += `</${list}>`; list = null; } continue; }
+
+    if (!line.trim()) { closeList(); closeTable(); continue; }
+
+    if (line.trim().startsWith("|")) {
+      closeList();
+      const cells = splitRow(line);
+      const isSeparator = cells.every((cell) => /^:?-{2,}:?$/.test(cell));
+      if (isSeparator) continue;
+      if (!table) table = [];
+      table.push(cells);
+      continue;
+    }
+    closeTable();
+
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) { if (list) { html += `</${list}>`; list = null; } html += `<h3>${heading[2]}</h3>`; continue; }
+    if (heading) { closeList(); html += `<h3>${heading[2]}</h3>`; continue; }
+
     const item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
     if (item) {
       if (!list) { list = "ul"; html += "<ul>"; }
       html += `<li>${inline(item[1])}</li>`;
       continue;
     }
-    if (list) { html += `</${list}>`; list = null; }
+
+    closeList();
     html += `<p>${inline(line)}</p>`;
   }
-  if (list) html += `</${list}>`;
+  closeList();
+  closeTable();
   return html;
 }
 

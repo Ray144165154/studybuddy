@@ -96,17 +96,18 @@ class TestAsk(WebTestCase):
         self.assertEqual(status, 400)
         self.assertIn("书库是空的", data["error"])
 
-    def test_model_failure_is_mapped_to_502(self) -> None:
+    def test_internal_failure_does_not_leak_details(self) -> None:
         class Broken(ScriptedLLM):
             def complete(self, messages, tools=None):  # type: ignore[no-untyped-def]
-                raise RuntimeError("upstream down")
+                raise RuntimeError("upstream down at /secret/path")
 
         buddy = StudyBuddy(
             self.root, model="m", api_key="k", llm=Broken(), library=self.library, memory=self.memory
         )
         status, data = WebApp(buddy).dispatch("POST", "/api/ask", {"question": "q"}, {})
         self.assertEqual(status, 500)
-        self.assertIn("upstream down", data["error"])
+        self.assertNotIn("upstream down", data["error"])
+        self.assertNotIn("/secret/path", data["error"])
 
 
 class TestBooksAndUpload(WebTestCase):
