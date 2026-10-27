@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>studybuddy · 教材学习助手</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <span>studybuddy</span>
+    </div>
+    <div class="status" id="status">连接中…</div>
+    <div class="actions">
+      <button class="ghost" id="btn-memory">记忆</button>
+      <button class="ghost" id="btn-settings">设置</button>
+    </div>
+  </header>
+
+  <main>
+    <aside>
+      <div class="aside-head">
+        <h2>书库</h2>
+        <span class="pill" id="book-count">0</span>
+      </div>
+      <ul id="books" class="books"></ul>
+
+      <div class="uploader">
+        <label class="btn secondary block" for="file">导入 PDF 教材</label>
+        <input id="file" type="file" accept="application/pdf" hidden>
+        <input id="course" class="text" placeholder="课程名（可选），如 高等数学">
+        <div class="hint">扫描版请先用 OCR，再用 <code>studybuddy add-text</code> 导入</div>
+      </div>
+    </aside>
+
+    <section class="chat">
+      <div id="messages" class="messages">
+        <div class="empty">
+          <h1>问你的教材</h1>
+          <p>先导入一本 PDF，然后随便问。每个回答都会标出页码，方便你翻书核对。</p>
+        </div>
+      </div>
+
+      <form id="ask-form" class="composer">
+        <textarea id="question" rows="2" placeholder="问点什么…  Enter 发送，Shift+Enter 换行"></textarea>
+        <div class="composer-row">
+          <label class="check"><input type="checkbox" id="rewrite"> 查询改写</label>
+          <label class="check"><input type="checkbox" id="semantic" checked> 语义检索</label>
+          <span class="spacer"></span>
+          <button class="btn primary" type="submit" id="send">发送</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <div id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>学习记忆</h2>
+      <button class="ghost" id="btn-close-drawer">关闭</button>
+    </div>
+    <div id="memory-body" class="drawer-body"></div>
+  </div>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <dialog id="settings">
+    <form method="dialog" class="dialog">
+      <h2>模型设置</h2>
+      <p class="hint">Key 只保存在当前进程内存里，不写磁盘。也可以先用环境变量启动。</p>
+      <label>模型
+        <input id="set-model" class="text" placeholder="deepseek-chat">
+      </label>
+      <label>接口地址
+        <input id="set-base" class="text" placeholder="https://api.deepseek.com/v1">
+      </label>
+      <label>API Key
+        <input id="set-key" class="text" type="password" placeholder="sk-…">
+      </label>
+      <div class="dialog-actions">
+        <button class="btn ghost" value="cancel">取消</button>
+        <button class="btn primary" id="btn-save-settings" value="default">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

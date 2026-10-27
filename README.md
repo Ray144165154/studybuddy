@@ -94,6 +94,7 @@ make demo
 | `studybuddy ask "问题" --rewrite` | 先让模型改写检索式（多一次小调用，难问题更准） |
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
+| `studybuddy ui` | 打开本地网页界面（浏览器里提问、导入、看记忆） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
 | `studybuddy summary --book 高等数学 --chapter 3` | 第 3 章复习提纲 |
 | `studybuddy compare "导数" "微分"` | 易混概念对比表 |
@@ -117,6 +118,22 @@ make demo
 
 API Key 解析顺序：`--api-key` → `STUDYBUDDY_API_KEY` → `OPENAI_API_KEY` →
 `DEEPSEEK_API_KEY` → `OPENROUTER_API_KEY`。本地端点不校验鉴权时会自动用占位符。
+
+## 网页界面
+
+```bash
+studybuddy ui          # 打开 http://127.0.0.1:8765
+```
+
+一个单页界面，不依赖任何前端框架、也没有新的 Python 依赖（标准库 `http.server`）：
+
+- **提问**：回答正文 + 可点击的 `[1]` 引用角标，来源列表带书名/页码/小节；公式 OCR 失真的
+  片段会标「公式可能失真」
+- **书库**：导入 PDF（拖拽或选择文件）、按书一键「出题」「提纲」
+- **记忆**：画像、薄弱点、跟进话题、今天该复习什么，可一键「记住了/没记住」调整间隔重复
+- **设置**：模型、接口地址、API Key。**Key 只存在进程内存里，不写磁盘**，重启即失效
+
+默认只监听 `127.0.0.1`；界面是本地单用户工具，没有账号体系。
 
 ## 混合检索（可选）
 
@@ -283,7 +300,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 277 个测试
+make check       # ruff + mypy --strict + 299 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -328,6 +345,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-277 offline tests, MIT licensed.
+299 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

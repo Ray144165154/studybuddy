@@ -139,6 +139,11 @@ def _build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--goal", action="append", default=None)
     profile.add_argument("--pref", action="append", default=None)
 
+    ui = sub.add_parser("ui", help="打开本地网页界面（浏览器里提问、导入教材、看记忆）")
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("-p", "--port", type=int, default=8765)
+    ui.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+
     sub.add_parser("stats", help="显示书库与记忆概况")
     return parser
 
@@ -404,6 +409,17 @@ def main(argv: list[str] | None = None) -> int:
             result = buddy.compare(args.concept_a, args.concept_b)
             _warn(result.warnings)
             print(result.with_citations())
+            return 0
+
+        if args.command == "ui":
+            from .web import serve
+
+            serve(
+                buddy,
+                host=args.host,
+                port=args.port,
+                open_browser=not args.no_open,
+            )
             return 0
 
         if args.command == "index":
