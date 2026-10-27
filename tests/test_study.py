@@ -254,6 +254,37 @@ class TestCompoundCoverage(StudyTestCase):
         self.assertIn("m:p1:0", ids)
         self.assertIn("m:p2:0", ids)
 
+    def test_section_lead_is_pulled_in_even_if_body_does_not_match(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id="m:p10:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=10,
+                section="1.6 独立事件类",
+                text="独立性的定义：若联合概率等于乘积，则两事件独立。",
+            ),
+            Chunk(
+                id="m:p11:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=11,
+                section="1.6 独立事件类",
+                text="习题：证明独立事件类在取余集下仍独立。",
+            ),
+        ]
+        self.library.save()
+        buddy = self.buddy(says("答 [1]"), says(MEMORY_JSON))
+        hits, _warning = buddy._retrieve(
+            "独立性在取余集下还成立吗",
+            books=buddy.library.books,
+            top_k=3,
+            per_book_cap=3,
+            semantic=False,
+        )
+        ids = [chunk.id for chunk, _score in hits]
+        self.assertIn("m:p10:0", ids)
+
 
 class TestQuiz(StudyTestCase):
     def test_quiz_parses_questions(self) -> None:

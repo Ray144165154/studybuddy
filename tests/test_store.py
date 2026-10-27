@@ -192,6 +192,37 @@ class TestAddDocument(unittest.TestCase):
         hits = self.library.search("概率 定义", top_k=6, per_book_cap=1)
         self.assertLessEqual(len(hits), 2)
 
+    def test_section_leads_follow_titles(self) -> None:
+        self.library.add_document(
+            title="书",
+            pages=[
+                (10, "1.6 独立事件类\n独立性的定义：若 P(AB)=P(A)P(B) 则称 A 与 B 独立。"),
+                (11, "1.6 独立事件类\n习题：证明独立事件类的性质。"),
+                (20, "2.1 随机变量\n随机变量是可测函数。"),
+            ],
+        )
+        leads = self.library.section_leads("独立事件 独立性", limit=2)
+        self.assertTrue(leads)
+        self.assertEqual(leads[0].page, 10)  # the opening chunk, not the exercises
+
+    def test_section_leads_ignore_junk_headings(self) -> None:
+        self.library.add_document(title="书", pages=[(1, "条件概率 于是由引理1知，对任一 n 有")])
+        self.assertEqual(self.library.section_leads("条件概率"), [])
+
+    def test_section_leads_ignore_navigation(self) -> None:
+        self.library.add_document(
+            title="书",
+            pages=[(1, "目录\n" + "\n".join(f"3.{i} 条件概率讨论 {i * 10}" for i in range(1, 30)))],
+        )
+        self.assertEqual(self.library.section_leads("条件概率"), [])
+
+    def test_section_leads_respect_book_filter(self) -> None:
+        self.library.add_document(title="甲", pages=[(1, "1.1 概率的定义\n概率的定义。")])
+        self.library.add_document(title="乙", pages=[(1, "1.1 概率的定义\n概率的定义。")])
+        leads = self.library.section_leads("概率", books=[self.library.get_book("乙")], limit=3)
+        self.assertTrue(leads)
+        self.assertEqual({chunk.book_id for chunk in leads}, {self.library.get_book("乙").id})
+
     def test_navigation_pages_are_skipped_by_default(self) -> None:
         self.library.add_document(
             title="书",

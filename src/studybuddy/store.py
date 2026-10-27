@@ -32,6 +32,14 @@ _FORMAT_VERSION = 1
 _SLUG_KEEP = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
 
 
+def _looks_like_heading(text: str) -> bool:
+    """Reject OCR false positives such as "1 推论的条件，于是由引理1知…"."""
+    stripped = text.strip()
+    if not 2 <= len(stripped) <= 30:
+        return False
+    return not any(mark in stripped for mark in "，。；：、：,;")
+
+
 def slugify(text: str) -> str:
     """A filesystem- and URL-safe identifier that preserves Chinese characters."""
     cleaned = _SLUG_KEEP.sub("-", text.strip()).strip("-").lower()
@@ -214,6 +222,41 @@ class Library:
         if not references:
             return list(self.books)
         return [self.get_book(reference) for reference in references]
+
+    def section_leads(
+        self,
+        query: str,
+        *,
+        books: Iterable[Book] | None = None,
+        limit: int = 3,
+    ) -> list[Chunk]:
+        """The first chunk of each section whose *title* matches the query.
+
+        Section titles are the book's own vocabulary: "独立性" may be the right
+        chapter even when no body paragraph matches the student's wording. Pulling
+        the opening chunk of the best-matching sections fixes the common failure
+        where the answer is in §1.6 but retrieval only surfaces its exercises.
+        """
+        allowed_ids = {book.id for book in books} if books is not None else None
+
+        leads: dict[tuple[str, str], Chunk] = {}
+        for chunk in self.chunks:
+            if chunk.nav or not _looks_like_heading(chunk.section):
+                continue
+            if allowed_ids is not None and chunk.book_id not in allowed_ids:
+                continue
+            key = (chunk.book_id, chunk.section)
+            current = leads.get(key)
+            if current is None or (chunk.page, chunk.id) < (current.page, current.id):
+                leads[key] = chunk
+
+        if not leads:
+            return []
+
+        keys = list(leads)
+        index = BM25([tokenize(key[1]) for key in keys])
+        ranked = index.top_k(query, k=limit)
+        return [leads[keys[position]] for position, _score in ranked]
 
     def chunks_of(self, book_id: str) -> list[Chunk]:
         return [chunk for chunk in self.chunks if chunk.book_id == book_id]

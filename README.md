@@ -20,7 +20,7 @@
 2. **要能跨教材** —— 「拉格朗日中值定理和柯西中值定理的关系」可能同时需要高数书和数分书。
 3. **要记得住你** —— 你薄弱的知识点、偏好的讲解方式、上次问过什么，跨会话保留，并按遗忘曲线安排复习。
 
-**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引（目录页与索引页会被自动识别并排除，否则它们会霸占几乎所有查询）；
+**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引（目录页与索引页会被自动识别并排除，否则它们会霸占几乎所有查询）；复合问句会按主题拆分，并额外按**小节标题**召回章节首页，避免"定义在章首、习题被搜到"的常见错位；
 章节标题同时识别 `第三章`、`3.1`、`Chapter 3`、`Section 2.1` 四种写法。
 中文 PDF 常见的字符合成问题（Kangxi 部首 `⾃` 代替 `自`）会被自动归一化，
 否则「自变量」永远搜不到「⾃变量」。
@@ -187,6 +187,8 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
                                               │
                                               ▼
 问题 ──► 中文二元组 BM25 检索 ──► 片段 [1][2][3] ──┐
+   ├──► 复合问句拆分（"A 与 B 的关系"）─────────────────┤
+   └──► 小节标题匹配（把章节首页的"定义"拉进来）──────────┘
    │                                              ├──► prompt ──► 模型 ──► 带引用回答
    └──► 记忆召回（薄弱点/偏好/历史） ─────────────┘         │
                                                           ▼
@@ -239,7 +241,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 235 个测试
+make check       # ruff + mypy --strict + 240 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -284,6 +286,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-235 offline tests, MIT licensed.
+240 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

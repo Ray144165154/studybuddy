@@ -333,6 +333,16 @@ class StudyBuddy:
         head = primary[:2]
         seen = {chunk.id for chunk, _score in head}
         coverage: list[tuple[Chunk, float]] = []
+
+        # Section titles are the book's own vocabulary: pull the opening chunk of
+        # the best-matching sections so a definition buried at the start of a
+        # chapter is not lost behind its exercises.
+        for lead in self.library.section_leads(question, books=books, limit=2):
+            if lead.id in seen:
+                continue
+            seen.add(lead.id)
+            coverage.append((lead, 0.0))
+
         for part in split_query(question):
             for chunk, score in search(part, max(2, top_k // 3)):
                 if chunk.id in seen:
