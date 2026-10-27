@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from studybuddy.chunk import Chunker, chunk_document, detect_section
+from studybuddy.chunk import Chunker, chunk_document, detect_section, is_navigation_text
 from studybuddy.types import Book
 
 
@@ -38,6 +38,41 @@ class TestDetectSection(unittest.TestCase):
 
     def test_blank(self) -> None:
         self.assertIsNone(detect_section("   "))
+
+
+class TestNavigationPages(unittest.TestCase):
+    def test_table_of_contents(self) -> None:
+        text = "目录\n第1章 概率与测度 1\n3.1 导数的概念 12"
+        self.assertTrue(is_navigation_text(text))
+
+    def test_index_page(self) -> None:
+        text = "内容索引\n" + "\n".join(f"条目{i} 1.2.{i}" for i in range(40))
+        self.assertTrue(is_navigation_text(text))
+
+    def test_body_page_is_not_navigation(self) -> None:
+        text = "定理3 设随机变量序列独立同分布，则其部分和服从大数定律。" * 6
+        self.assertFalse(is_navigation_text(text))
+
+    def test_numbered_exercises_are_not_navigation(self) -> None:
+        # 40 short numbered items, but they do not end in page references.
+        text = "\n".join(f"{i}. 证明随机变量的期望具有线性性质" for i in range(1, 41))
+        self.assertFalse(is_navigation_text(text))
+
+    def test_empty(self) -> None:
+        self.assertFalse(is_navigation_text("   "))
+
+    def test_chunker_marks_nav_chunks(self) -> None:
+        toc = "目录\n" + "\n".join(f"{i}.{j} 小节标题 {i * 10 + j}" for i in range(1, 6) for j in range(1, 8))
+        chunks = Chunker(book()).feed_page(1, toc)
+        self.assertTrue(chunks)
+        self.assertTrue(all(chunk.nav for chunk in chunks))
+
+    def test_chunker_marks_body_chunks(self) -> None:
+        chunks = Chunker(book()).feed_page(1, "定理3 设随机变量序列独立同分布。" * 5)
+        self.assertFalse(any(chunk.nav for chunk in chunks))
+
+    def test_section_trailing_decoration_is_stripped(self) -> None:
+        self.assertEqual(detect_section("第1章 概率与测度・"), "第1章 概率与测度")
 
 
 class TestChunker(unittest.TestCase):

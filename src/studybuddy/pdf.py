@@ -14,10 +14,10 @@ from typing import Any
 
 from .errors import PDFError
 
-__all__ = ["PdfPage", "PdfDocument", "read_pdf"]
+__all__ = ["PdfPage", "PdfDocument", "read_pdf", "clean_text"]
 
 # A line that is only a page number, e.g. "42", "- 42 -", "第 42 页".
-_PAGE_NUMBER_LINE = re.compile(r"^[\s\-—–]*(\d{1,4}|第\s*\d{1,4}\s*页)[\s\-—–]*$")
+_PAGE_NUMBER_LINE = re.compile(r"^[\s\-—–·•∙⋅・]*(\d{1,4}|第\s*\d{1,4}\s*页)[\s\-—–·•∙⋅・]*$")
 # Words split across a line break: "deriv-\native" -> "derivative".
 _HYPHEN_BREAK = re.compile(r"(\w)-\n(\w)")
 _MULTI_SPACE = re.compile(r"[ \t\u00a0\u3000]+")
@@ -69,8 +69,8 @@ class PdfDocument:
         return "\n\n".join(page.text for page in self.pages if not page.is_empty)
 
 
-def _clean(text: str) -> str:
-    """Repair the usual PDF extraction artefacts without touching the words."""
+def clean_text(text: str) -> str:
+    """Repair the usual extraction artefacts (PDF or OCR) without touching the words."""
     text = unicodedata.normalize("NFC", text)
     text = text.translate(_COMPAT_TABLE)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -126,7 +126,7 @@ def read_pdf(path: str | Path) -> PdfDocument:
             raw = page.extract_text() or ""
         except Exception:  # noqa: BLE001 - one broken page must not kill the book
             raw = ""
-        pages.append(PdfPage(number=number, text=_clean(raw)))
+        pages.append(PdfPage(number=number, text=clean_text(raw)))
 
     if not any(not page.is_empty for page in pages):
         raise PDFError(

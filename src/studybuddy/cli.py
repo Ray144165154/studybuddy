@@ -7,6 +7,7 @@ common case, and every answer ends with the pages it came from.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -71,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     index_cmd = sub.add_parser("index", help="为已导入教材建立向量索引（混合检索）")
     index_cmd.add_argument("--force", action="store_true", help="忽略已有向量，全部重建")
+
+    add_text = sub.add_parser("add-text", help="导入已抽取好的文本（OCR 结果、epub、笔记）")
+    add_text.add_argument("file", help='JSONL: {"page": 1, "text": "..."} 每行一页；纯文本则视为单页')
+    add_text.add_argument("-t", "--title", required=True)
+    add_text.add_argument("-c", "--course", default="")
 
     books = sub.add_parser("books", help="列出已导入的教材")
     books.add_argument("--json", action="store_true")
@@ -179,6 +185,47 @@ def _cmd_add(buddy: StudyBuddy, args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return 1 if failures else 0
+
+
+def _read_pages(path: Path) -> list[tuple[int, str]]:
+    """Read a JSONL page dump, falling back to treating the file as one page."""
+    text = path.read_text("utf-8", errors="replace")
+    pages: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            return [(1, text)]
+        if not isinstance(entry, dict) or "text" not in entry:
+            return [(1, text)]
+        pages.append((int(entry.get("page") or len(pages) + 1), str(entry["text"])))
+    return pages
+
+
+def _cmd_add_text(buddy: StudyBuddy, args: argparse.Namespace) -> int:
+    file = Path(args.file)
+    if not file.exists():
+        print(f"找不到文件: {file}", file=sys.stderr)
+        return 1
+    try:
+        pages = _read_pages(file)
+        book = buddy.add_document(
+            title=args.title,
+            pages=pages,
+            course=args.course,
+            source=str(file),
+            on_progress=lambda message: print(_style(f"  {message}", DIM)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"导入失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"✓ {book.title}  {book.pages} 页, {book.chunks} 个片段  id={book.id}")
+    if buddy.embedding_error:
+        print(_style(f"  向量索引失败（{buddy.embedding_error}）", YELLOW), file=sys.stderr)
+    return 0
 
 
 def _cmd_books(buddy: StudyBuddy, args: argparse.Namespace) -> int:
@@ -302,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "add": _cmd_add,
         "books": _cmd_books,
+        "add-text": _cmd_add_text,
         "quiz": _cmd_quiz,
         "review": _cmd_review,
         "memory": _cmd_memory,

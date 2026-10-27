@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,30 @@ class StudyBuddy:
         self.embedding_error: str | None = None
 
     # -- ingest --------------------------------------------------------------------
+
+    def add_document(
+        self,
+        *,
+        title: str,
+        pages: Iterable[tuple[int, str]],
+        course: str = "",
+        source: str = "",
+        embed: bool = True,
+        on_progress: Any = None,
+    ) -> Book:
+        """Index text that was extracted elsewhere (OCR, EPUB, pasted notes)."""
+        book = self.library.add_document(
+            title=title, pages=pages, course=course, source=source, on_progress=on_progress
+        )
+        if embed and self.ensure_embedder() is not None:
+            try:
+                self.library.build_embeddings(self.embedder)
+            except Exception as exc:  # noqa: BLE001 - still lexically searchable
+                self.embedding_error = f"{type(exc).__name__}: {exc}"
+        if course:
+            courses = list(dict.fromkeys([*self.memory.profile.courses, course]))
+            self.memory.set_profile(courses=courses)
+        return book
 
     def add_book(
         self,

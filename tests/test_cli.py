@@ -139,6 +139,39 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("向量", out)
 
+    def test_add_text_jsonl(self) -> None:
+        dump = self.tmp / "pages.jsonl"
+        dump.write_text(
+            '{"page": 1, "text": "第一章 事件与概率"}\n{"page": 2, "text": "随机变量"}\n',
+            encoding="utf-8",
+        )
+        code, out, _ = run("--root", self.root, "add-text", str(dump), "-t", "概率论基础", "-c", "概率论")
+        self.assertEqual(code, 0)
+        self.assertIn("概率论基础", out)
+        self.assertIn("2 页", out)
+
+        _, out, _ = run("--root", self.root, "books")
+        self.assertIn("概率论基础", out)
+
+    def test_add_text_plain_file(self) -> None:
+        plain = self.tmp / "notes.txt"
+        plain.write_text("这是一段课堂笔记。\n随机变量是样本空间上的可测函数。", encoding="utf-8")
+        code, out, _ = run("--root", self.root, "add-text", str(plain), "-t", "笔记")
+        self.assertEqual(code, 0)
+        self.assertIn("1 页", out)
+
+    def test_add_text_missing_file(self) -> None:
+        code, _, err = run("--root", self.root, "add-text", str(self.tmp / "nope.jsonl"), "-t", "x")
+        self.assertEqual(code, 1)
+        self.assertIn("找不到文件", err)
+
+    def test_add_text_empty_dump(self) -> None:
+        dump = self.tmp / "empty.jsonl"
+        dump.write_text("", encoding="utf-8")
+        code, _, err = run("--root", self.root, "add-text", str(dump), "-t", "空")
+        self.assertEqual(code, 1)
+        self.assertIn("失败", err)
+
     def test_remove_unknown_book(self) -> None:
         run("--root", self.root, "add", str(self.pdf), "--title", "高等数学")
         code, _, err = run("--root", self.root, "remove", "物理")

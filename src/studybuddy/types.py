@@ -168,6 +168,7 @@ class Chunk:
     section: str
     text: str
     course: str = ""
+    nav: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -178,6 +179,7 @@ class Chunk:
             "section": self.section,
             "text": self.text,
             "course": self.course,
+            "nav": self.nav,
         }
 
     @classmethod
@@ -190,6 +192,7 @@ class Chunk:
             section=str(data.get("section", "")),
             text=str(data.get("text", "")),
             course=str(data.get("course", "")),
+            nav=bool(data.get("nav", False)),
         )
 
     @property

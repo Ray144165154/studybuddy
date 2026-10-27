@@ -20,7 +20,7 @@
 2. **要能跨教材** —— 「拉格朗日中值定理和柯西中值定理的关系」可能同时需要高数书和数分书。
 3. **要记得住你** —— 你薄弱的知识点、偏好的讲解方式、上次问过什么，跨会话保留，并按遗忘曲线安排复习。
 
-**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引；
+**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引（目录页与索引页会被自动识别并排除，否则它们会霸占几乎所有查询）；
 章节标题同时识别 `第三章`、`3.1`、`Chapter 3`、`Section 2.1` 四种写法。
 中文 PDF 常见的字符合成问题（Kangxi 部首 `⾃` 代替 `自`）会被自动归一化，
 否则「自变量」永远搜不到「⾃变量」。
@@ -92,6 +92,7 @@ make demo
 | `studybuddy ask "问题"` | 跨所有教材检索并回答，带页码引用 |
 | `studybuddy ask "问题" --book 高等数学` | 限定在某本教材里问 |
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
+| `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
 | `studybuddy summary --book 高等数学 --chapter 3` | 第 3 章复习提纲 |
 | `studybuddy compare "导数" "微分"` | 易混概念对比表 |
@@ -155,6 +156,30 @@ export STUDYBUDDY_EMBED_MODEL=nomic-embed-text
 export STUDYBUDDY_EMBED_BASE_URL=http://127.0.0.1:11434/v1
 ```
 
+## 扫描版 PDF
+
+扫描件没有文字层，`studybuddy add` 会**明确拒绝并提示**（而不是导入一本空书）：
+
+```
+PDFError: no selectable text found in 概率论基础.pdf.
+It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again.
+```
+
+OCR 之后用 `add-text` 导入即可。macOS 上仓库自带一个 Vision OCR 脚本（中文识别质量好，
+不需要装 tesseract）：
+
+```bash
+# 编译 + 识别整本书（422 页约 2.5 分钟）
+swiftc -O scripts/ocr_macos.swift -o /tmp/ocr_macos \
+  -framework PDFKit -framework Vision -framework AppKit
+/tmp/ocr_macos 概率论基础.pdf pages.jsonl 1 422 150
+
+studybuddy add-text pages.jsonl -t "概率论基础" -c 概率论
+```
+
+Linux / Windows 用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的 PDF，
+再 `studybuddy add` 即可。详见 [scripts/README.md](scripts/README.md)。
+
 ## 工作原理
 
 ```text
@@ -214,7 +239,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 206 个测试
+make check       # ruff + mypy --strict + 228 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -236,7 +261,8 @@ PDF 生成器产出，含 Kangxi 部首），模型用 `ScriptedLLM` 或本地�
 
 ## 已知限制
 
-- 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR。
+- 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR（OCR 后可用 `add-text` 导入）。
+- OCR 会认错数学符号（`σ`→`o`、`𝒜`→`9`），公式类检索效果明显弱于正文。
 - 不做混合检索时，中文是纯词法匹配，同义改写（「求导」vs「微分」）可能漏召回；
   配置 embedding 后可以缓解，但 embedding 需要额外的 API（DeepSeek 目前不提供
   `/embeddings`，可指向 OpenAI 或本地 Ollama）。
@@ -258,6 +284,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-206 offline tests, MIT licensed.
+228 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

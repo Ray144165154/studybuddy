@@ -11,7 +11,36 @@ import re
 
 from .types import Book, Chunk
 
-__all__ = ["detect_section", "Chunker", "chunk_document"]
+__all__ = ["detect_section", "Chunker", "chunk_document", "is_navigation_text"]
+
+_NAV_MARKERS = ("目录", "内容索引", "符号索引", "人名索引", "名词索引", "索引")
+_NUM_ENTRY = re.compile(r"^\s*(第?\s*\d+(\s*[.．]\s*\d+)*)\s+\S")
+_TRAIL_REF = re.compile(r"\d+\s*[.．]?\s*$")
+
+
+def is_navigation_text(text: str) -> bool:
+    """True for a table of contents or an index page.
+
+    These pages repeat every heading in the book, so they out-rank the real content
+    on almost any query. Detecting them by shape (short lines ending in a reference)
+    is more robust than by wording alone.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    head = " ".join(lines[:2])
+    if any(marker in head for marker in _NAV_MARKERS):
+        return True
+
+    if len(lines) >= 30:
+        references = sum(
+            1 for line in lines if _NUM_ENTRY.match(line) or (len(line) < 40 and _TRAIL_REF.search(line))
+        )
+        if references / len(lines) >= 0.55:
+            return True
+    return False
+
 
 # Chinese textbooks: 第三章 / 第二节 / 第 3 章, then "3.1 导数的概念", "1.2.3 Theorem".
 _SECTION_PATTERNS = (
@@ -43,7 +72,7 @@ def detect_section(line: str) -> str | None:
         if match:
             number = match.group(1).strip()
             title = (match.group(2) or "").strip(" .．、:：")
-            title = re.sub(r"\s+", " ", title)[:40]
+            title = re.sub(r"\s+", " ", title)[:40].strip(" ・•·、")
             return f"{number} {title}".strip()
 
     # A bare, short, title-cased Chinese line with no punctuation is usually a heading.
@@ -95,7 +124,7 @@ class Chunker:
         self.section = ""
         self._ordinal = 0
 
-    def _make(self, page: int, text: str) -> Chunk:
+    def _make(self, page: int, text: str, *, nav: bool = False) -> Chunk:
         chunk = Chunk(
             id=f"{self.book.id}:p{page}:{self._ordinal}",
             book_id=self.book.id,
@@ -104,6 +133,7 @@ class Chunker:
             section=self.section,
             text=text,
             course=self.book.course,
+            nav=nav,
         )
         self._ordinal += 1
         return chunk
@@ -116,12 +146,13 @@ class Chunker:
         buffer: list[str] = []
         buffered = 0
         self._ordinal = 0
+        nav_page = is_navigation_text(text)
 
         def flush() -> None:
             nonlocal buffer, buffered
             body = "\n".join(buffer).strip()
             if body:
-                chunks.append(self._make(page_number, body))
+                chunks.append(self._make(page_number, body, nav=nav_page))
             buffer, buffered = [], 0
 
         def emit(paragraph: str) -> None:
@@ -142,7 +173,10 @@ class Chunker:
         for block in re.split(r"\n\s*\n", text):
             pending: list[str] = []
             for line in block.split("\n"):
-                heading = detect_section(line)
+                # On a table of contents every line looks like a heading. Treating
+                # them as headings would discard the whole page *and* poison the
+                # section state for the following page, so skip detection there.
+                heading = None if nav_page else detect_section(line)
                 if heading:
                     if pending:
                         emit("\n".join(pending))

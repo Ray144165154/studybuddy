@@ -29,6 +29,16 @@ class TestReadPdf(unittest.TestCase):
         lines = [line.strip() for line in document.pages[0].text.split("\n")]
         self.assertNotIn("42", lines)
 
+    def test_ocr_style_page_number_is_removed(self) -> None:
+        # Scanned books often OCR the folio as "•30・", "·30·" or "- 30 -".
+        # The PDF fixture writer is latin-1 only, so the cleaner is tested directly.
+        from studybuddy.pdf import clean_text
+
+        for folio in ("•30・", "·30·", "- 30 -", "第 30 页", "30"):
+            cleaned = clean_text(f"{folio}\nChapter 1\nbody text")
+            self.assertNotIn("30", cleaned, folio)
+            self.assertIn("body text", cleaned)
+
     def test_page_numbers_are_one_based(self) -> None:
         document = read_pdf(make_textbook(self.tmp / "book.pdf"))
         self.assertEqual([page.number for page in document.pages], [1, 2])

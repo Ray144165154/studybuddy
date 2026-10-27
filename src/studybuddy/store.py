@@ -19,7 +19,7 @@ from .chunk import chunk_document
 from .embed import DEFAULT_RRF_K, EmbeddingIndex, reciprocal_rank_fusion
 from .errors import LibraryError, StudyError
 from .index import BM25, tokenize
-from .pdf import read_pdf
+from .pdf import clean_text, read_pdf
 from .types import Book, Chunk
 
 __all__ = ["Library", "slugify"]
@@ -101,6 +101,57 @@ class Library:
 
     # -- ingest --------------------------------------------------------------------
 
+    def add_document(
+        self,
+        *,
+        title: str,
+        pages: Iterable[tuple[int, str]],
+        course: str = "",
+        source: str = "",
+        chunk_size: int = 800,
+        book_id: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> Book:
+        """Index already-extracted text.
+
+        This is the entry point for anything that is not a text-layer PDF: an OCR
+        pipeline, an EPUB conversion, or notes pasted from a lecture.
+        """
+        page_list = [(int(number), clean_text(text)) for number, text in pages]
+        if not any(text.strip() for _number, text in page_list):
+            raise LibraryError("没有可索引的文字内容（这份文档可能是扫描件，需要先做 OCR）")
+
+        book_title = (title or source or "untitled").strip()
+        if book_id is None:
+            digest = hashlib.sha1(f"{source}:{len(page_list)}:{book_title}".encode()).hexdigest()[:6]
+            book_id = f"{slugify(book_title)}-{digest}"
+
+        book = Book(
+            id=book_id,
+            title=book_title,
+            course=course,
+            pages=len(page_list),
+            source=source,
+            added_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+        if on_progress:
+            on_progress(f"chunking {len(page_list)} page(s)")
+        new_chunks = chunk_document(book, page_list, max_chars=chunk_size)
+        book.chunks = len(new_chunks)
+
+        # Re-adding the same book replaces it instead of duplicating.
+        self.books = [existing for existing in self.books if existing.id != book_id]
+        self.chunks = [chunk for chunk in self.chunks if chunk.book_id != book_id]
+        self.books.append(book)
+        self.chunks.extend(new_chunks)
+        self.save()
+        self._prune_embeddings()
+
+        if on_progress:
+            on_progress(f"indexed {len(new_chunks)} chunk(s)")
+        return book
+
     def add_book(
         self,
         path: str | Path,
@@ -118,34 +169,16 @@ class Library:
 
         book_title = (title or document.title or file.stem).strip()
         digest = hashlib.sha1(f"{file.name}:{file.stat().st_size}:{book_title}".encode()).hexdigest()[:6]
-        book_id = f"{slugify(book_title)}-{digest}"
 
-        book = Book(
-            id=book_id,
+        return self.add_document(
             title=book_title,
+            pages=[(page.number, page.text) for page in document.pages],
             course=course,
-            pages=document.page_count,
             source=str(file),
-            added_at=datetime.now().isoformat(timespec="seconds"),
+            chunk_size=chunk_size,
+            book_id=f"{slugify(book_title)}-{digest}",
+            on_progress=on_progress,
         )
-
-        if on_progress:
-            on_progress(f"chunking {document.non_empty_pages} page(s)")
-        pages = [(page.number, page.text) for page in document.pages]
-        new_chunks = chunk_document(book, pages, max_chars=chunk_size)
-        book.chunks = len(new_chunks)
-
-        # Re-adding the same book replaces it instead of duplicating.
-        self.books = [existing for existing in self.books if existing.id != book_id]
-        self.chunks = [chunk for chunk in self.chunks if chunk.book_id != book_id]
-        self.books.append(book)
-        self.chunks.extend(new_chunks)
-        self.save()
-        self._prune_embeddings()
-
-        if on_progress:
-            on_progress(f"indexed {len(new_chunks)} chunk(s)")
-        return book
 
     def remove_book(self, reference: str) -> Book:
         book = self.get_book(reference)
@@ -276,6 +309,7 @@ class Library:
         min_score: float = 0.0,
         query_vector: Sequence[float] | None = None,
         rrf_k: int = DEFAULT_RRF_K,
+        include_nav: bool = False,
     ) -> list[tuple[Chunk, float]]:
         """Rank chunks against ``query``, optionally restricted to some books.
 
@@ -289,8 +323,12 @@ class Library:
             return []
 
         allowed_ids = {book.id for book in books} if books is not None else None
-        if allowed_ids is not None:
-            allowed = {index for index, chunk in enumerate(self.chunks) if chunk.book_id in allowed_ids}
+        if allowed_ids is not None or not include_nav:
+            allowed = {
+                index
+                for index, chunk in enumerate(self.chunks)
+                if (allowed_ids is None or chunk.book_id in allowed_ids) and (include_nav or not chunk.nav)
+            }
             # The vector index is keyed by chunk id, not by book id.
             allowed_chunk_ids = {self.chunks[index].id for index in allowed}
         else:
@@ -321,6 +359,8 @@ class Library:
                 continue
             if allowed_ids is not None and chunk.book_id not in allowed_ids:
                 continue
+            if chunk.nav and not include_nav:  # a table of contents is not an answer
+                continue
             if per_book[chunk.book_id] >= per_book_cap:
                 continue
             per_book[chunk.book_id] += 1
@@ -336,6 +376,7 @@ class Library:
             "books": len(self.books),
             "pages": sum(book.pages for book in self.books),
             "chunks": len(self.chunks),
+            "nav_chunks": sum(1 for chunk in self.chunks if chunk.nav),
             "embeddings": len(self.embeddings) if self.embeddings is not None else 0,
             "embedding_model": self.embeddings_model or "",
             "root": str(self.root),
