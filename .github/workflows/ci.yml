@@ -43,6 +43,9 @@ jobs:
       - name: Type check
         run: mypy src/studybuddy
 
+      - name: Frontend syntax check
+        run: node --check src/studybuddy/webui/app.js
+
       - name: Test
         run: python -m unittest discover -s tests -v
 
@@ -80,6 +83,9 @@ jobs:
 
       - name: Type check
         run: mypy src/studybuddy
+
+      - name: Frontend syntax check
+        run: node --check src/studybuddy/webui/app.js
 
       - name: Test
         run: python -m unittest discover -s tests -v

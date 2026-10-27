@@ -71,7 +71,7 @@ function renderMarkdown(text) {
     closeTable();
 
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) { closeList(); html += `<h3>${heading[2]}</h3>`; continue; }
+    if (heading) { closeList(); html += `<h3>${inline(heading[2])}</h3>`; continue; }
 
     const item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
     if (item) {
@@ -88,11 +88,76 @@ function renderMarkdown(text) {
   return html;
 }
 
-function inline(text) {
+
+// ---------------------------------------------------------------------------
+// minimal LaTeX rendering
+//
+// The model answers in LaTeX ($\sigma$, \mathbb{R}, X_n, \frac{a}{b}). Shipping
+// KaTeX would add ~1MB to a local-first tool, so this covers the notation that
+// actually shows up in probability/calculus textbooks and leaves anything exotic
+// recognisable rather than broken.
+// ---------------------------------------------------------------------------
+
+const MATH_SYMBOLS = {
+  // 希腊字母
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε",
+  zeta: "ζ", eta: "η", theta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ",
+  nu: "ν", xi: "ξ", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", upsilon: "υ",
+  phi: "φ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω",
+  Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π",
+  Sigma: "Σ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+  // 关系与运算
+  le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠", approx: "≈",
+  equiv: "≡", sim: "∼", propto: "∝", ll: "≪", gg: "≫",
+  times: "×", div: "÷", cdot: "·", pm: "±", mp: "∓",
+  to: "→", rightarrow: "→", leftarrow: "←", mapsto: "↦", implies: "⇒",
+  iff: "⇔", in: "∈", notin: "∉", ni: "∋", subset: "⊂", subseteq: "⊆",
+  supset: "⊃", supseteq: "⊇", cup: "∪", cap: "∩", setminus: "∖",
+  emptyset: "∅", varnothing: "∅", forall: "∀", exists: "∃", neg: "¬",
+  infty: "∞", partial: "∂", nabla: "∇", sum: "∑", prod: "∏", int: "∫",
+  oint: "∮", sqrt: "√", angle: "∠", perp: "⊥", parallel: "∥",
+  cdots: "⋯", ldots: "…", dots: "…", quad: " ", qquad: "  ",
+  // 黑板粗体
+  "mathbb{R}": "ℝ", "mathbb{N}": "ℕ", "mathbb{Z}": "ℤ", "mathbb{Q}": "ℚ",
+  "mathbb{C}": "ℂ", "mathbb{E}": "𝔼", "mathbb{P}": "ℙ",
+};
+
+function mathTokens(expr) {
+  // 先处理带参数的命令，再处理单符号命令
+  let out = expr;
+  out = out.replace(/\\(?:text|mathrm|mathit|mathbf|operatorname)\{([^{}]*)\}/g, "$1");
+  out = out.replace(/\\(?:mathbb|mathcal|mathscr|mathfrak)\{([A-Za-z])\}/g, (m, letter) => {
+    const blackboard = { R: "ℝ", N: "ℕ", Z: "ℤ", Q: "ℚ", C: "ℂ" };
+    return blackboard[letter] || letter; // 避免补充平面字形（𝒜 会显示成方框）
+  });
+  out = out.replace(/\\sqrt\{([^{}]*)\}/g, "√($1)");
+  out = out.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, "($1)/($2)");
+  out = out.replace(/\\([A-Za-z]+)/g, (m, name) => (MATH_SYMBOLS[name] !== undefined ? MATH_SYMBOLS[name] : name));
+  out = out.replace(/\\[,;:! ]/g, " ").replace(/[{}]/g, "").replace(/\\/g, "");
+  return out;
+}
+
+function mathToHtml(expr) {
+  let html = mathTokens(expr);
+  // 上下标：先整体替换，再处理单字符
+  html = html.replace(/\^\{([^{}]*)\}/g, "<sup>$1</sup>").replace(/_\{([^{}]*)\}/g, "<sub>$1</sub>");
+  html = html.replace(/\^([A-Za-z0-9+\-])/g, "<sup>$1</sup>").replace(/_([A-Za-z0-9+\-])/g, "<sub>$1</sub>");
+  return `<span class="math">${html}</span>`;
+}
+
+function renderMath(text) {
   return text
-    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\$\$([\s\S]+?)\$\$/g, (m, expr) => mathToHtml(expr))
+    .replace(/\$([^$\n]+?)\$/g, (m, expr) => mathToHtml(expr));
+}
+
+function inline(text) {
+  return renderMath(
+    text
+      .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/`(.+?)`/g, "<code>$1</code>")
-    .replace(/\[(\d{1,2})\]/g, '<span class="cite" data-cite="$1">$1</span>');
+      .replace(/\[(\d{1,2})\]/g, '<span class="cite" data-cite="$1">$1</span>')
+  );
 }
 
 // ---------------------------------------------------------------------------

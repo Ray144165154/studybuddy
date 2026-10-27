@@ -118,6 +118,13 @@ aside {
   vertical-align: 1px;
 }
 
+.math {
+  font-family: "STIX Two Math", "Cambria Math", "Noto Sans Math", "Apple Symbols", serif;
+  font-style: italic;
+  white-space: nowrap;
+}
+.math sup, .math sub { font-size: .72em; font-style: normal; line-height: 0; }
+
 .answer table {
   width: 100%;
   border-collapse: collapse;
