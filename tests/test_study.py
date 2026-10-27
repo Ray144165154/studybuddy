@@ -9,7 +9,7 @@ from pathlib import Path
 
 from studybuddy import Book, Chunk, Library, Memory, StudyBuddy
 from studybuddy.errors import StudyError
-from studybuddy.study import split_query
+from studybuddy.study import normalize_math_text, split_query
 from support import ScriptedLLM, make_textbook, says
 
 MEMORY_JSON = json.dumps(
@@ -118,6 +118,24 @@ class TestQuerySplit(unittest.TestCase):
 
     def test_single_topic_is_not_split(self) -> None:
         self.assertEqual(split_query("矩阵乘法为什么不满足交换律"), [])
+
+
+class TestMathText(unittest.TestCase):
+    """Decorative math letters render as tofu boxes in many fonts."""
+
+    def test_astral_math_letters_become_ascii(self) -> None:
+        self.assertEqual(normalize_math_text("在 𝒬 上，𝓕(x)"), "在 Q 上，F(x)")
+
+    def test_plain_text_is_untouched(self) -> None:
+        text = "条件概率 P(A|B) = P(AB)/P(B)"
+        self.assertEqual(normalize_math_text(text), text)
+
+    def test_superscripts_and_letterlike_symbols_survive(self) -> None:
+        text = "f⁻¹(B) ⊂ ℝ^n，σ(f) 可测"
+        self.assertEqual(normalize_math_text(text), text)
+
+    def test_empty(self) -> None:
+        self.assertEqual(normalize_math_text(""), "")
 
 
 class TestAsk(StudyTestCase):

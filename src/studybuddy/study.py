@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,7 +67,9 @@ SYSTEM_PROMPT = """你是一位严谨、耐心的大学学业辅导老师，正�
 1. 只依据【教材片段】作答。片段中没有的内容，明确说明“教材中未找到”，绝不编造。
 2. 引用片段时，在句子末尾用 [编号] 标注，编号就是片段前的数字，可以同时引用多个如 [1][3]。
 3. 如果学生画像或记忆显示这是他的薄弱点，多给一步推导和一个具体例子。
-4. 中文作答，结论先行再给推导，避免空洞的鼓励和重复原话。"""
+4. 中文作答，结论先行再给推导，避免空洞的鼓励和重复原话。
+5. 数学符号用普通字符书写（如 f^{-1}、R^n、sigma、sqrt），不要使用 𝒬、𝓕、ℝ 这类
+   装饰性 Unicode 数学字母——它们在很多字体里会显示成方框。"""
 
 QUIZ_SYSTEM = """你是一位大学课程的命题老师。你只输出 JSON，不输出任何解释文字。"""
 
@@ -77,6 +80,21 @@ COMPARE_SYSTEM = """你是一位擅长辨析相近概念的大学老师。你总
 MEMORY_SYSTEM = """你在维护一名学生的学习记忆库。你只输出 JSON，不输出任何解释文字。"""
 
 REWRITE_SYSTEM = """你是教材检索助手。你只输出 JSON 数组，不输出任何解释文字。"""
+
+
+_EXOTIC_MATH = re.compile(r"[\U0001D400-\U0001D7FF]")
+
+
+def normalize_math_text(text: str) -> str:
+    """Map decorative Unicode math letters (𝒬, 𝓕, ℝ) back to plain ASCII.
+
+    Those code points live in a supplementary plane that many UI fonts do not
+    cover, so they render as tofu boxes -- which users read as "garbled text".
+    NFKC maps them to their ASCII base letters.
+    """
+    if not text:
+        return text
+    return _EXOTIC_MATH.sub(lambda match: unicodedata.normalize("NFKC", match.group()), text)
 
 
 def _loads_json_array(text: str) -> list[str] | None:
@@ -282,7 +300,7 @@ class StudyBuddy:
         response = self.llm.complete(messages)
 
         answer = Answer(
-            text=(response.text or "").strip(),
+            text=normalize_math_text((response.text or "").strip()),
             sources=sources,
             memories=[hit.text for hit in self.memory.recall(question, limit=4)],
             warnings=[warning] if warning else [],
@@ -495,9 +513,9 @@ class StudyBuddy:
 
         questions = [
             QuizQuestion(
-                question=str(item.get("question", "")).strip(),
-                answer=str(item.get("answer", "")).strip(),
-                hint=str(item.get("hint", "")).strip(),
+                question=normalize_math_text(str(item.get("question", "")).strip()),
+                answer=normalize_math_text(str(item.get("answer", "")).strip()),
+                hint=normalize_math_text(str(item.get("hint", "")).strip()),
                 difficulty=str(item.get("difficulty", difficulty)).strip(),
             )
             for item in payload.get("questions") or []
@@ -539,7 +557,7 @@ class StudyBuddy:
             [Message(role="system", content=SUMMARY_SYSTEM), Message(role="user", content=prompt)]
         )
         return Answer(
-            text=(response.text or "").strip(),
+            text=normalize_math_text((response.text or "").strip()),
             sources=sources,
             usage=response.usage,
             model=response.model or self.model,
@@ -586,7 +604,7 @@ class StudyBuddy:
             [Message(role="system", content=COMPARE_SYSTEM), Message(role="user", content=prompt)]
         )
         return Comparison(
-            text=(response.text or "").strip(),
+            text=normalize_math_text((response.text or "").strip()),
             sources=sources,
             warnings=[w for w in (warning_a, warning_b) if w],
         )

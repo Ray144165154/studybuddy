@@ -20,7 +20,8 @@ html, body {
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        "Hiragino Sans GB", "Microsoft YaHei", "STIX Two Math", "Cambria Math",
+        "Noto Sans Math", "Apple Symbols", sans-serif;
 }
 
 body { display: flex; flex-direction: column; }
