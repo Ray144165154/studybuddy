@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is deliberately small. Features that add a dependency, a graph
+        runtime or a plugin system are usually out of scope -- but tell us why it
+        belongs in the core and it will be considered.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you are trying to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like plainagent to do
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you have considered
+EOF
+echo "templates written"; find .github -type f | sort

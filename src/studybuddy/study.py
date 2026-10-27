@@ -1,0 +1,493 @@
+"""The study assistant: retrieve, answer with citations, remember, schedule review.
+
+The pipeline for a question is intentionally explicit rather than agentic:
+
+1. retrieve the most relevant passages across the student's books
+2. assemble a prompt from *profile + recalled memory + passages*
+3. answer with ``[n]`` citations back to real pages
+4. extract durable memories and record the episode
+
+Determinism matters more than autonomy here: a student must be able to trust that an
+answer came from page 143 of the book they uploaded, not from the model's imagination.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .errors import StudyError
+from .llm import LLM
+from .memory import Memory
+from .store import Library
+from .types import Answer, Book, Chunk, Message, Source
+
+__all__ = ["StudyBuddy", "QuizQuestion", "Quiz", "Comparison", "ReviewItem"]
+
+_CITATION = re.compile(r"\[(\d{1,2})\]")
+
+SYSTEM_PROMPT = """你是一位严谨、耐心的大学学业辅导老师，正在辅导一名大学生理解他自己上传的教材。
+
+必须遵守：
+1. 只依据【教材片段】作答。片段中没有的内容，明确说明“教材中未找到”，绝不编造。
+2. 引用片段时，在句子末尾用 [编号] 标注，编号就是片段前的数字，可以同时引用多个如 [1][3]。
+3. 如果学生画像或记忆显示这是他的薄弱点，多给一步推导和一个具体例子。
+4. 中文作答，结论先行再给推导，避免空洞的鼓励和重复原话。"""
+
+QUIZ_SYSTEM = """你是一位大学课程的命题老师。你只输出 JSON，不输出任何解释文字。"""
+
+SUMMARY_SYSTEM = """你是一位擅长做知识梳理的大学助教。你的提纲紧凑、可执行，学生照着就能复习。"""
+
+COMPARE_SYSTEM = """你是一位擅长辨析相近概念的大学老师。你总能一眼看出学生混淆它们的原因。"""
+
+MEMORY_SYSTEM = """你在维护一名学生的学习记忆库。你只输出 JSON，不输出任何解释文字。"""
+
+
+@dataclass(slots=True)
+class QuizQuestion:
+    question: str
+    answer: str = ""
+    hint: str = ""
+    difficulty: str = "medium"
+
+
+@dataclass(slots=True)
+class Quiz:
+    topic: str = ""
+    book: str = ""
+    questions: list[QuizQuestion] = field(default_factory=list)
+
+    def render(self, *, show_answers: bool = False) -> str:
+        lines: list[str] = []
+        if self.topic:
+            lines.append(f"主题: {self.topic}" + (f"（{self.book}）" if self.book else ""))
+            lines.append("")
+        for number, question in enumerate(self.questions, start=1):
+            lines.append(f"{number}. {question.question}")
+            if show_answers:
+                if question.hint:
+                    lines.append(f"   提示: {question.hint}")
+                lines.append(f"   答案: {question.answer}")
+                lines.append(f"   难度: {question.difficulty}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+
+@dataclass(slots=True)
+class Comparison:
+    text: str
+    sources: list[Source] = field(default_factory=list)
+
+    def with_citations(self) -> str:
+        if not self.sources:
+            return self.text
+        lines = [self.text, "", "来源:"]
+        lines.extend(f"  [{source.index}] {source.citation}" for source in self.sources)
+        return "\n".join(lines)
+
+
+@dataclass(slots=True)
+class ReviewItem:
+    topic: str
+    mastery: float
+    question: str
+
+
+def _loads_json_block(text: str) -> dict[str, Any] | None:
+    """Pull the first JSON object out of a model reply, tolerating markdown fences."""
+    if not text:
+        return None
+    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        payload = json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+class StudyBuddy:
+    """The facade a CLI, a web app or a notebook talks to."""
+
+    def __init__(
+        self,
+        root: str | Path = ".studybuddy",
+        *,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        temperature: float = 0.2,
+        llm: Any = None,
+        library: Library | None = None,
+        memory: Memory | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.model = model
+        self.library = library or Library(self.root)
+        self.memory = memory or Memory(self.root)
+        self.llm = llm or LLM(model=model, api_key=api_key, base_url=base_url, temperature=temperature)
+        self.session: list[Message] = []
+
+    # -- ingest --------------------------------------------------------------------
+
+    def add_book(
+        self,
+        path: str | Path,
+        *,
+        course: str = "",
+        title: str | None = None,
+        on_progress: Any = None,
+    ) -> Book:
+        book = self.library.add_book(path, course=course, title=title, on_progress=on_progress)
+        if course:
+            courses = list(dict.fromkeys([*self.memory.profile.courses, course]))
+            self.memory.set_profile(courses=courses)
+        return book
+
+    # -- ask -----------------------------------------------------------------------
+
+    def ask(
+        self,
+        question: str,
+        *,
+        books: list[str] | None = None,
+        top_k: int = 6,
+        remember: bool = True,
+        per_book_cap: int = 3,
+    ) -> Answer:
+        """Answer a question using the student's textbooks, with page citations."""
+        question = question.strip()
+        if not question:
+            raise StudyError("问题是空的")
+        if not self.library.chunks:
+            raise StudyError("书库是空的 -- 先用 `studybuddy add` 导入一本教材")
+
+        selected = self.library.resolve_books(books)
+        hits = self.library.search(question, books=selected, top_k=top_k, per_book_cap=per_book_cap)
+        sources = [
+            Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
+        ]
+
+        messages = [
+            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="user", content=self._ask_prompt(question, sources)),
+        ]
+        response = self.llm.complete(messages)
+
+        answer = Answer(
+            text=(response.text or "").strip(),
+            sources=sources,
+            memories=[hit.text for hit in self.memory.recall(question, limit=4)],
+            usage=response.usage,
+            model=response.model or self.model,
+        )
+
+        self.session.append(Message(role="user", content=question))
+        self.session.append(Message(role="assistant", content=answer.text))
+
+        if remember:
+            self.remember(question, answer)
+        return answer
+
+    def _ask_prompt(self, question: str, sources: list[Source]) -> str:
+        blocks: list[str] = []
+
+        memory_block = self.memory.context_block(question)
+        blocks.append("【学生情况】")
+        blocks.append(memory_block or "（还没有画像和记忆）")
+        blocks.append("")
+
+        if self.session:
+            blocks.append("【本次会话最近对话】")
+            for message in self.session[-4:]:
+                who = "学生" if message.role == "user" else "你"
+                blocks.append(f"{who}: {(message.content or '')[:300]}")
+            blocks.append("")
+
+        blocks.append("【教材片段】")
+        if not sources:
+            blocks.append("（没有检索到相关片段）")
+        for source in sources:
+            blocks.append(f"[{source.index}] {source.citation}")
+            blocks.append(source.chunk.text.strip()[:1600])
+            blocks.append("")
+
+        blocks.append("【问题】")
+        blocks.append(question)
+        blocks.append("")
+        blocks.append("如果片段不足以回答，请直接说明缺什么；引用时用 [编号]。")
+        return "\n".join(blocks)
+
+    # -- memory --------------------------------------------------------------------
+
+    def remember(self, question: str, answer: Answer) -> None:
+        """Persist the episode and extract durable facts about the student."""
+        books = list(dict.fromkeys(source.chunk.book_title for source in answer.sources))[:3]
+        topics, facts, summary = self._extract_memory(question, answer.text, books)
+
+        self.memory.record_episode(
+            question,
+            summary=summary or answer.text[:200],
+            topics=topics,
+            books=books,
+        )
+        for topic in topics:
+            self.memory.note_topic(topic)
+        for fact in facts:
+            self.memory.add_fact(
+                fact["text"],
+                topic=fact.get("topic", ""),
+                kind=fact.get("kind", "fact"),
+            )
+
+    def _extract_memory(
+        self, question: str, answer: str, books: list[str]
+    ) -> tuple[list[str], list[dict[str, str]], str]:
+        prompt = f"""基于下面这一轮问答，抽取值得长期记住的信息。
+
+学生问: {question}
+辅导回答: {answer[:1200]}
+用到的教材: {", ".join(books) or "无"}
+
+只输出 JSON：
+{{"topics": ["知识点术语", "..."],
+ "facts": [{{"text": "关于学生本人的、以后还有用的信息",
+            "kind": "weakness|preference|goal|fact", "topic": "相关知识点"}}],
+ "summary": "一句话概括这次问答"}}
+
+要求：
+- topics 用教材术语，1-3 个；不确定就给空数组
+- facts 只记录学生的薄弱点、偏好、目标；没有就给空数组，不要记录一次性的闲聊
+- 全部用中文"""
+
+        try:
+            response = self.llm.complete(
+                [Message(role="system", content=MEMORY_SYSTEM), Message(role="user", content=prompt)]
+            )
+        except Exception:  # noqa: BLE001 - memory must never break an answer
+            return [], [], ""
+
+        payload = _loads_json_block(response.text or "")
+        if not payload:
+            return [], [], ""
+
+        topics = [str(item).strip() for item in payload.get("topics") or [] if str(item).strip()][:3]
+        raw_facts = payload.get("facts") or []
+        facts: list[dict[str, str]] = []
+        if isinstance(raw_facts, list):
+            for item in raw_facts[:5]:
+                if isinstance(item, dict) and str(item.get("text", "")).strip():
+                    facts.append(
+                        {
+                            "text": str(item["text"]).strip(),
+                            "kind": str(item.get("kind", "fact")).strip() or "fact",
+                            "topic": str(item.get("topic", "")).strip(),
+                        }
+                    )
+        summary = str(payload.get("summary") or "").strip()
+        return topics, facts, summary
+
+    # -- quiz ----------------------------------------------------------------------
+
+    def quiz(
+        self,
+        *,
+        book: str | None = None,
+        topic: str | None = None,
+        count: int = 5,
+        difficulty: str = "medium",
+    ) -> Quiz:
+        """Generate comprehension questions from a book, a topic, or both."""
+        chunks = self._material(book=book, topic=topic, limit=10)
+        if not chunks:
+            raise StudyError("没有找到可用于出题的内容，换一个主题或先导入教材")
+
+        book_title = chunks[0].book_title
+        focus = topic or (chunks[0].section if chunks else book_title)
+        body = "\n\n".join(
+            f"[{index}] {chunk.citation}\n{chunk.text[:1200]}" for index, chunk in enumerate(chunks, 1)
+        )
+
+        prompt = f"""根据下面的教材内容，出 {count} 道考查**理解**而不是死记硬背的题。
+难度: {difficulty}
+主题: {focus}
+
+{body}
+
+只输出 JSON：
+{{"topic": "{focus}",
+ "questions": [{{"question": "...", "answer": "...", "hint": "...",
+                "difficulty": "easy|medium|hard"}}]}}"""
+
+        response = self.llm.complete(
+            [Message(role="system", content=QUIZ_SYSTEM), Message(role="user", content=prompt)]
+        )
+        payload = _loads_json_block(response.text or "") or {}
+
+        questions = [
+            QuizQuestion(
+                question=str(item.get("question", "")).strip(),
+                answer=str(item.get("answer", "")).strip(),
+                hint=str(item.get("hint", "")).strip(),
+                difficulty=str(item.get("difficulty", difficulty)).strip(),
+            )
+            for item in payload.get("questions") or []
+            if isinstance(item, dict) and str(item.get("question", "")).strip()
+        ]
+
+        quiz = Quiz(topic=str(payload.get("topic") or focus), book=book_title, questions=questions[:count])
+        if quiz.topic:
+            self.memory.note_topic(quiz.topic)
+        return quiz
+
+    # -- summary -------------------------------------------------------------------
+
+    def summary(self, *, book: str, chapter: str | None = None, limit: int = 12) -> Answer:
+        """A revision outline for a book or one chapter of it."""
+        chunks = self._material(book=book, topic=chapter, limit=limit, section_filter=chapter)
+        if not chunks:
+            raise StudyError(f"没有找到 {book!r} 的内容" + (f"（{chapter!r} 章）" if chapter else ""))
+
+        sources = [Source(index=index + 1, chunk=chunk) for index, chunk in enumerate(chunks)]
+        body = "\n\n".join(
+            f"[{source.index}] {source.citation}\n{source.chunk.text[:1200]}" for source in sources
+        )
+
+        prompt = f"""请为下面的教材内容写一份复习提纲，帮助学生在一周内掌握它。
+
+{body}
+
+输出 markdown，结构固定：
+## 一句话概括
+## 核心概念（每个概念一句话 + 它在考试里通常怎么考）
+## 关键公式 / 结论
+## 易错点（至少 3 条）
+## 自测题（3 道，只给题目不给答案）
+
+引用教材时用 [编号]。"""
+
+        response = self.llm.complete(
+            [Message(role="system", content=SUMMARY_SYSTEM), Message(role="user", content=prompt)]
+        )
+        return Answer(
+            text=(response.text or "").strip(),
+            sources=sources,
+            usage=response.usage,
+            model=response.model or self.model,
+        )
+
+    # -- compare -------------------------------------------------------------------
+
+    def compare(self, concept_a: str, concept_b: str, *, top_k: int = 4) -> Comparison:
+        """Explain the difference between two concepts using passages for each."""
+        hits_a = self.library.search(concept_a, top_k=top_k)
+        hits_b = self.library.search(concept_b, top_k=top_k)
+
+        seen: set[str] = set()
+        numbered: list[tuple[Chunk, float]] = []
+        for chunk, score in [*hits_a, *hits_b]:
+            if chunk.id in seen:
+                continue
+            seen.add(chunk.id)
+            numbered.append((chunk, score))
+        if not numbered:
+            raise StudyError("这两个概念在你上传的教材里都没有出现")
+
+        sources = [
+            Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(numbered)
+        ]
+        body = "\n\n".join(
+            f"[{source.index}] {source.citation}\n{source.chunk.text[:1200]}" for source in sources
+        )
+
+        prompt = f"""学生在区分这两个概念：「{concept_a}」和「{concept_b}」。
+
+{body}
+
+请输出：
+1. 一句话结论：它们的根本区别
+2. 对比表格（定义 / 成立条件 / 结论差异 / 典型例题场景）
+3. 学生最容易混淆的一点，以及一个记住它们的口诀或判据
+
+引用教材用 [编号]。"""
+
+        response = self.llm.complete(
+            [Message(role="system", content=COMPARE_SYSTEM), Message(role="user", content=prompt)]
+        )
+        return Comparison(
+            text=(response.text or "").strip(),
+            sources=sources,
+        )
+
+    # -- review (spaced repetition) -------------------------------------------------
+
+    def review(self, *, limit: int = 3) -> list[ReviewItem]:
+        """Return due topics with one fresh question each."""
+        due = self.memory.due_topics(limit=limit)
+        items: list[ReviewItem] = []
+        for topic in due:
+            try:
+                quiz = self.quiz(topic=topic.name, count=1)
+            except StudyError:
+                continue
+            if not quiz.questions:
+                continue
+            items.append(
+                ReviewItem(
+                    topic=topic.name,
+                    mastery=topic.mastery,
+                    question=quiz.questions[0].question,
+                )
+            )
+        return items
+
+    def grade(self, topic: str, *, correct: bool) -> Any:
+        """Record a self-assessed quiz result and reschedule the topic."""
+        return self.memory.grade_topic(topic, correct=correct)
+
+    # -- helpers -------------------------------------------------------------------
+
+    def _material(
+        self,
+        *,
+        book: str | None,
+        topic: str | None,
+        limit: int = 10,
+        section_filter: str | None = None,
+    ) -> list[Chunk]:
+        books = self.library.resolve_books([book] if book else None)
+
+        if topic:
+            hits = self.library.search(topic, books=books, top_k=limit, per_book_cap=limit)
+            chunks = [chunk for chunk, _score in hits]
+            if chunks:
+                return chunks
+            # A topic that is not in the books must fail loudly, not fall back to
+            # sampling unrelated material and pretending it is about that topic.
+            if not book:
+                return []
+
+        if section_filter:
+            needle = section_filter.lower()
+            matched = [
+                chunk
+                for chunk in self.library.chunks
+                if chunk.book_id in {item.id for item in books} and needle in chunk.section.lower()
+            ]
+            if matched:
+                return matched[:limit]
+
+        if book:
+            return self.library.chunks_of(books[0].id)[:limit]
+
+        # No topic and no book: sample evenly so we never send an entire book.
+        pool = [chunk for chunk in self.library.chunks if chunk.book_id in {item.id for item in books}]
+        if len(pool) <= limit:
+            return pool
+        step = max(1, len(pool) // limit)
+        return pool[::step][:limit]
