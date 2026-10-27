@@ -178,7 +178,9 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
   片段会标「公式可能失真」
 - **书库**：导入 PDF（拖拽或选择文件）、按书一键「出题」「提纲」
 - **记忆**：画像、薄弱点、跟进话题、今天该复习什么，可一键「记住了/没记住」调整间隔重复
-- **设置**：模型、接口地址、API Key。**Key 只存在进程内存里，不写磁盘**，重启即失效
+- **设置**：内置 DeepSeek / OpenAI / 本地 Ollama 预设，一键填好模型与端点。
+  模型和接口地址会记在 `.studybuddy/ui-config.json`；**API Key 只存在进程内存里，不写磁盘**，
+  重启需要重填（这是有意的）
 
 ### 安全边界
 
@@ -370,7 +372,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 342 个测试
+make check       # ruff + mypy --strict + 346 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -438,6 +440,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-342 offline tests, MIT licensed.
+346 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

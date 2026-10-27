@@ -469,6 +469,14 @@ $("file").addEventListener("change", (event) => {
 $("btn-memory").onclick = openMemory;
 $("btn-close-drawer").onclick = closeMemory;
 $("scrim").onclick = closeMemory;
+document.querySelectorAll(".presets button").forEach((button) => {
+  button.onclick = () => {
+    $("set-model").value = button.dataset.model;
+    $("set-base").value = button.dataset.base;
+    $("set-key").focus();
+  };
+});
+
 $("btn-settings").onclick = openSettings;
 $("btn-save-settings").onclick = (event) => {
   event.preventDefault();

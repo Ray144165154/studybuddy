@@ -10,6 +10,7 @@ import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from studybuddy import Book, Chunk, Library, Memory, StudyBuddy
 from studybuddy.web import WebApp, _Handler
@@ -165,6 +166,61 @@ class TestSettings(WebTestCase):
         app = self.app()
         _, data = app.dispatch("POST", "/api/config", {"model": "m2"}, {})
         self.assertFalse(data["llm_ready"])
+
+
+class TestPersistedSettings(WebTestCase):
+    def test_model_and_endpoint_are_saved_but_not_the_key(self) -> None:
+        app = self.app()
+        app.dispatch(
+            "POST",
+            "/api/config",
+            {"model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-secret"},
+            {},
+        )
+        raw = (self.root / "ui-config.json").read_text("utf-8")
+        saved = json.loads(raw)
+        self.assertEqual(saved["model"], "deepseek-chat")
+        self.assertEqual(saved["base_url"], "https://api.deepseek.com/v1")
+        self.assertNotIn("sk-secret", raw)
+
+    def test_saved_settings_are_restored_on_restart(self) -> None:
+        self.app().dispatch(
+            "POST",
+            "/api/config",
+            {"model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1"},
+            {},
+        )
+
+        fresh = StudyBuddy(
+            self.root,
+            model="gpt-4o-mini",
+            api_key="not-needed",
+            llm=ScriptedLLM(),
+            library=self.library,
+            memory=self.memory,
+        )
+        WebApp(fresh)  # construction restores the saved choice
+
+        self.assertEqual(fresh.model, "deepseek-chat")
+        self.assertEqual(getattr(fresh.llm, "base_url", ""), "https://api.deepseek.com/v1")
+        self.assertFalse(WebApp(fresh).llm_ready, "the key must not be restored")
+
+    def test_read_only_data_dir_does_not_break_settings(self) -> None:
+        app = self.app()
+        with patch("pathlib.Path.write_text", side_effect=OSError("read-only")):
+            status, data = app.dispatch(
+                "POST",
+                "/api/config",
+                {"model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1"},
+                {},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["model"], "deepseek-chat")
+        self.assertEqual(app.buddy.model, "deepseek-chat")
+
+    def test_missing_config_file_is_fine(self) -> None:
+        app = self.app()
+        self.assertEqual(app.buddy.model, "test-model")
 
 
 class TestMemoryActions(WebTestCase):

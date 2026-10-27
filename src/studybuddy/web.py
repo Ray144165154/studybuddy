@@ -24,6 +24,7 @@ import binascii
 import json
 import sys
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ _MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 _MAX_BODY_BYTES = 2 * 1024 * 1024
 _MAX_QUESTION_CHARS = 8000
 _LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+_UI_CONFIG_FILE = "ui-config.json"
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -87,6 +89,52 @@ class WebApp:
     def __init__(self, buddy: StudyBuddy) -> None:
         self.buddy = buddy
         self._lock = threading.Lock()
+        self.restore_config()
+
+    # -- persisted (non-secret) settings -------------------------------------------
+
+    @property
+    def config_path(self) -> Path:
+        return Path(self.buddy.root) / _UI_CONFIG_FILE
+
+    def restore_config(self) -> None:
+        """Re-apply the model choice from the last run.
+
+        Only the model and endpoint are stored. The API key is deliberately never
+        written to disk, so it has to be supplied again after a restart.
+        """
+        path = self.config_path
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if not isinstance(data, dict):
+            return
+        model = data.get("model")
+        base_url = data.get("base_url")
+        if isinstance(model, str) and model.strip():
+            self.buddy.model = model.strip()
+            self.buddy.llm.model = self.buddy.model
+        if isinstance(base_url, str) and base_url.strip():
+            self.buddy.llm.base_url = base_url.strip().rstrip("/")
+
+    def save_config(self) -> None:
+        """Persist the model choice; a read-only data directory must not break the UI."""
+        payload = {
+            "model": self.buddy.model,
+            "base_url": getattr(self.buddy.llm, "base_url", ""),
+        }
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        except OSError as exc:  # read-only volume, sandbox, permissions...
+            print(
+                f"[web] 无法保存设置到 {self.config_path}（{exc}）。本次仍然生效，但重启后会丢失。",
+                file=sys.stderr,
+                flush=True,
+            )
 
     # -- helpers -------------------------------------------------------------------
 
@@ -230,7 +278,8 @@ class WebApp:
             self.buddy.llm.base_url = base
         if str(payload.get("api_key", "")).strip():
             self.buddy.llm.api_key = str(payload["api_key"]).strip()
-        return {"ok": True, "llm_ready": self.llm_ready}
+        self.save_config()
+        return {"ok": True, "llm_ready": self.llm_ready, "model": self.buddy.model}
 
     def clear_memory(self) -> dict[str, Any]:
         memory = self.buddy.memory
@@ -347,6 +396,10 @@ class WebApp:
             # PDFError / LibraryError / StudyError: the user's input or data is at fault.
             return 400, {"error": str(exc)}
         except Exception:  # noqa: BLE001 - never leak internals to the client
+            # The client gets a generic message, so the detail must go somewhere:
+            # the terminal that is running `studybuddy ui`.
+            print(f"[web] 内部错误 {method} {path}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
             return 500, {"error": "服务器内部错误，详情见终端日志"}
 
 

@@ -67,7 +67,12 @@
   <dialog id="settings">
     <form method="dialog" class="dialog">
       <h2>模型设置</h2>
-      <p class="hint">Key 只保存在当前进程内存里，不写磁盘。也可以先用环境变量启动。</p>
+      <p class="hint">Key 只保存在当前进程内存里，不写磁盘；模型和接口地址会被记住。</p>
+      <div class="presets">
+        <button type="button" class="btn tiny" data-model="deepseek-chat" data-base="https://api.deepseek.com/v1">DeepSeek</button>
+        <button type="button" class="btn tiny" data-model="gpt-4o-mini" data-base="https://api.openai.com/v1">OpenAI</button>
+        <button type="button" class="btn tiny" data-model="llama3.1" data-base="http://127.0.0.1:11434/v1">本地 Ollama</button>
+      </div>
       <label>模型
         <input id="set-model" class="text" placeholder="deepseek-chat">
       </label>
