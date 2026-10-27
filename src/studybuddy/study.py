@@ -14,11 +14,13 @@ answer came from page 143 of the book they uploaded, not from the model's imagin
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .embed import DEFAULT_RRF_K, Embedder
 from .errors import StudyError
 from .llm import LLM
 from .memory import Memory
@@ -80,6 +82,7 @@ class Quiz:
 class Comparison:
     text: str
     sources: list[Source] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def with_citations(self) -> str:
         if not self.sources:
@@ -125,6 +128,10 @@ class StudyBuddy:
         llm: Any = None,
         library: Library | None = None,
         memory: Memory | None = None,
+        embedding_model: str | None = None,
+        embedding_base_url: str | None = None,
+        embedder: Any = None,
+        rrf_k: int = DEFAULT_RRF_K,
     ) -> None:
         self.root = Path(root)
         self.model = model
@@ -132,6 +139,14 @@ class StudyBuddy:
         self.memory = memory or Memory(self.root)
         self.llm = llm or LLM(model=model, api_key=api_key, base_url=base_url, temperature=temperature)
         self.session: list[Message] = []
+
+        self._api_key = api_key
+        self._base_url = base_url
+        self.embedding_model = embedding_model or os.environ.get("STUDYBUDDY_EMBED_MODEL") or None
+        self.embedding_base_url = embedding_base_url or os.environ.get("STUDYBUDDY_EMBED_BASE_URL") or None
+        self.embedder: Any = embedder
+        self.rrf_k = rrf_k
+        self.embedding_error: str | None = None
 
     # -- ingest --------------------------------------------------------------------
 
@@ -142,8 +157,14 @@ class StudyBuddy:
         course: str = "",
         title: str | None = None,
         on_progress: Any = None,
+        embed: bool = True,
     ) -> Book:
         book = self.library.add_book(path, course=course, title=title, on_progress=on_progress)
+        if embed and self.ensure_embedder() is not None:
+            try:
+                self.library.build_embeddings(self.embedder)
+            except Exception as exc:  # noqa: BLE001 - the book is still lexically searchable
+                self.embedding_error = f"{type(exc).__name__}: {exc}"
         if course:
             courses = list(dict.fromkeys([*self.memory.profile.courses, course]))
             self.memory.set_profile(courses=courses)
@@ -159,6 +180,7 @@ class StudyBuddy:
         top_k: int = 6,
         remember: bool = True,
         per_book_cap: int = 3,
+        semantic: bool = True,
     ) -> Answer:
         """Answer a question using the student's textbooks, with page citations."""
         question = question.strip()
@@ -168,7 +190,15 @@ class StudyBuddy:
             raise StudyError("书库是空的 -- 先用 `studybuddy add` 导入一本教材")
 
         selected = self.library.resolve_books(books)
-        hits = self.library.search(question, books=selected, top_k=top_k, per_book_cap=per_book_cap)
+        query_vector, warning = self._query_vector(question) if semantic else (None, None)
+        hits = self.library.search(
+            question,
+            books=selected,
+            top_k=top_k,
+            per_book_cap=per_book_cap,
+            query_vector=query_vector,
+            rrf_k=self.rrf_k,
+        )
         sources = [
             Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
         ]
@@ -183,6 +213,7 @@ class StudyBuddy:
             text=(response.text or "").strip(),
             sources=sources,
             memories=[hit.text for hit in self.memory.recall(question, limit=4)],
+            warnings=[warning] if warning else [],
             usage=response.usage,
             model=response.model or self.model,
         )
@@ -385,8 +416,10 @@ class StudyBuddy:
 
     def compare(self, concept_a: str, concept_b: str, *, top_k: int = 4) -> Comparison:
         """Explain the difference between two concepts using passages for each."""
-        hits_a = self.library.search(concept_a, top_k=top_k)
-        hits_b = self.library.search(concept_b, top_k=top_k)
+        vector_a, warning_a = self._query_vector(concept_a)
+        vector_b, warning_b = self._query_vector(concept_b)
+        hits_a = self.library.search(concept_a, top_k=top_k, query_vector=vector_a, rrf_k=self.rrf_k)
+        hits_b = self.library.search(concept_b, top_k=top_k, query_vector=vector_b, rrf_k=self.rrf_k)
 
         seen: set[str] = set()
         numbered: list[tuple[Chunk, float]] = []
@@ -422,6 +455,7 @@ class StudyBuddy:
         return Comparison(
             text=(response.text or "").strip(),
             sources=sources,
+            warnings=[w for w in (warning_a, warning_b) if w],
         )
 
     # -- review (spaced repetition) -------------------------------------------------
@@ -450,6 +484,46 @@ class StudyBuddy:
         """Record a self-assessed quiz result and reschedule the topic."""
         return self.memory.grade_topic(topic, correct=correct)
 
+    # -- embeddings ----------------------------------------------------------------
+
+    def ensure_embedder(self) -> Any:
+        """Return the embedding client, creating one from config when possible."""
+        if self.embedder is not None:
+            return self.embedder
+        model = self.embedding_model or self.library.embeddings_model
+        if not model:
+            return None
+        self.embedder = Embedder(
+            model,
+            api_key=self._api_key,
+            base_url=self.embedding_base_url or self._base_url,
+        )
+        return self.embedder
+
+    def build_index(self, *, force: bool = False, on_progress: Any = None) -> int:
+        """Embed every chunk that does not have a vector yet."""
+        embedder = self.ensure_embedder()
+        if embedder is None:
+            raise StudyError(
+                "还没有配置 embedding 模型。请设置 STUDYBUDDY_EMBED_MODEL 和 "
+                "STUDYBUDDY_EMBED_BASE_URL（或 --embed-model / --embed-base-url）"
+            )
+        if not self.library.chunks:
+            raise StudyError("书库是空的，先导入教材再建索引")
+        return self.library.build_embeddings(embedder, force=force, on_progress=on_progress)
+
+    def _query_vector(self, text: str) -> tuple[list[float] | None, str | None]:
+        """Embed the query, degrading to lexical search instead of failing."""
+        if not self.library.has_embeddings:
+            return None, None
+        embedder = self.ensure_embedder()
+        if embedder is None:
+            return None, None
+        try:
+            return embedder.embed_one(text), None
+        except Exception as exc:  # noqa: BLE001 - retrieval must survive an API outage
+            return None, f"语义检索不可用，本次退回词法检索（{type(exc).__name__}: {exc}）"
+
     # -- helpers -------------------------------------------------------------------
 
     def _material(
@@ -463,7 +537,15 @@ class StudyBuddy:
         books = self.library.resolve_books([book] if book else None)
 
         if topic:
-            hits = self.library.search(topic, books=books, top_k=limit, per_book_cap=limit)
+            vector, _warning = self._query_vector(topic)
+            hits = self.library.search(
+                topic,
+                books=books,
+                top_k=limit,
+                per_book_cap=limit,
+                query_vector=vector,
+                rrf_k=self.rrf_k,
+            )
             chunks = [chunk for chunk, _score in hits]
             if chunks:
                 return chunks

@@ -5,9 +5,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from studybuddy.cli import main
 from support import make_textbook
@@ -117,6 +119,25 @@ class TestCli(unittest.TestCase):
         self.assertIn("已删除", out)
         _, out, _ = run("--root", self.root, "books")
         self.assertIn("书库是空的", out)
+
+    def test_index_without_embedding_config(self) -> None:
+        run("--root", self.root, "add", str(self.pdf))
+        with patch.dict(os.environ, {}, clear=True):
+            code, _, err = run("--root", self.root, "index")
+        self.assertEqual(code, 1)
+        self.assertIn("embedding", err)
+
+    def test_index_on_empty_library(self) -> None:
+        with patch.dict(os.environ, {"STUDYBUDDY_EMBED_MODEL": "fake-embed"}, clear=False):
+            code, _, err = run("--root", self.root, "index")
+        self.assertEqual(code, 1)
+        self.assertIn("书库是空的", err)
+
+    def test_stats_mentions_vectors(self) -> None:
+        run("--root", self.root, "add", str(self.pdf))
+        code, out, _ = run("--root", self.root, "stats")
+        self.assertEqual(code, 0)
+        self.assertIn("向量", out)
 
     def test_remove_unknown_book(self) -> None:
         run("--root", self.root, "add", str(self.pdf), "--title", "高等数学")

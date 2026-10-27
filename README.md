@@ -91,6 +91,7 @@ make demo
 | `studybuddy books` | 列出已导入教材 |
 | `studybuddy ask "问题"` | 跨所有教材检索并回答，带页码引用 |
 | `studybuddy ask "问题" --book 高等数学` | 限定在某本教材里问 |
+| `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
 | `studybuddy summary --book 高等数学 --chapter 3` | 第 3 章复习提纲 |
 | `studybuddy compare "导数" "微分"` | 易混概念对比表 |
@@ -114,6 +115,45 @@ make demo
 
 API Key 解析顺序：`--api-key` → `STUDYBUDDY_API_KEY` → `OPENAI_API_KEY` →
 `DEEPSEEK_API_KEY` → `OPENROUTER_API_KEY`。本地端点不校验鉴权时会自动用占位符。
+
+## 混合检索（可选）
+
+默认是纯词法检索（BM25 + 中文二元组）：术语准确、完全离线，但**同义改写会漏召回**——
+你问「为什么求导和微分是一回事」，某页只写「导数与微分的关系」，词法匹配就找不到。
+
+接一个 embedding 端点即可补上这一块：
+
+```bash
+export STUDYBUDDY_EMBED_MODEL=text-embedding-3-small
+export STUDYBUDDY_EMBED_BASE_URL=https://api.openai.com/v1   # 可以和对话模型不同厂商
+studybuddy index
+```
+
+之后每次提问会同时跑两路召回，再用 **RRF（Reciprocal Rank Fusion）** 融合：
+
+```text
+          ┌── BM25 词法排名 ──┐
+问题 ─────┤                   ├── RRF 融合 ── 取前 k ── 带引用回答
+          └── 向量语义排名 ───┘
+```
+
+为什么用 RRF 而不是加权求和：BM25 分数和余弦相似度量纲完全不同，加权系数几乎没法调；
+RRF 只看名次（`1/(k+rank)` 累加），既不用调参，也不会因为某个分数尺度异常而崩掉。
+
+设计上的三个保证：
+
+- **没有 embedding 也能用**：不配置就完全走词法检索，行为和以前一模一样。
+- **服务挂了也不崩**：查询向量化失败会自动退回词法检索，并在终端给出提示。
+- **可随时关闭**：`studybuddy ask ... --no-semantic`。
+- 向量存在 `.studybuddy/embeddings.jsonl`，base64 编码的 float32（每块约 6KB），
+  换模型或 `--force` 会重建；删除某本书时自动清理对应向量。
+
+Ollama 本地模型同样支持：
+
+```bash
+export STUDYBUDDY_EMBED_MODEL=nomic-embed-text
+export STUDYBUDDY_EMBED_BASE_URL=http://127.0.0.1:11434/v1
+```
 
 ## 工作原理
 
@@ -174,7 +214,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 156 个测试
+make check       # ruff + mypy --strict + 206 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -197,8 +237,10 @@ PDF 生成器产出，含 Kangxi 部首），模型用 `ScriptedLLM` 或本地�
 ## 已知限制
 
 - 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR。
-- 中文检索是词法匹配（字符二元组），同义改写（「求导」vs「微分」）未必能召回，
-  这一点需要向量检索才能补上。
+- 不做混合检索时，中文是纯词法匹配，同义改写（「求导」vs「微分」）可能漏召回；
+  配置 embedding 后可以缓解，但 embedding 需要额外的 API（DeepSeek 目前不提供
+  `/embeddings`，可指向 OpenAI 或本地 Ollama）。
+- 向量索引是一次性成本，但每次提问会多一次 embedding 调用。
 - 中文检索用字符二元组，对术语准确但语义泛化能力弱于向量检索。
 - 一次问答会发两轮请求（回答 + 记忆抽取），token 成本约为普通问答的 1.5 倍。
 
@@ -216,6 +258,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-156 offline tests, MIT licensed.
+206 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

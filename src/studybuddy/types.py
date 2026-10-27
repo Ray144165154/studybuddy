@@ -220,6 +220,7 @@ class Answer:
     text: str
     sources: list[Source] = field(default_factory=list)
     memories: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     model: str = ""
 

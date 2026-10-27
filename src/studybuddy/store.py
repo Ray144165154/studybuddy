@@ -10,11 +10,13 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .chunk import chunk_document
+from .embed import DEFAULT_RRF_K, EmbeddingIndex, reciprocal_rank_fusion
 from .errors import LibraryError, StudyError
 from .index import BM25, tokenize
 from .pdf import read_pdf
@@ -24,6 +26,7 @@ __all__ = ["Library", "slugify"]
 
 _STATE_FILE = "library.json"
 _CHUNKS_FILE = "chunks.jsonl"
+_EMBEDDINGS_FILE = "embeddings.jsonl"
 _FORMAT_VERSION = 1
 
 _SLUG_KEEP = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
@@ -43,7 +46,9 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.books: list[Book] = []
         self.chunks: list[Chunk] = []
+        self.embeddings: EmbeddingIndex | None = None
         self._bm25: BM25 | None = None
+        self._chunk_by_id: dict[str, Chunk] | None = None
         self.load()
 
     # -- persistence ---------------------------------------------------------------
@@ -56,10 +61,19 @@ class Library:
     def chunks_path(self) -> Path:
         return self.root / _CHUNKS_FILE
 
+    @property
+    def embeddings_path(self) -> Path:
+        return self.root / _EMBEDDINGS_FILE
+
+    def _invalidate(self) -> None:
+        self._bm25 = None
+        self._chunk_by_id = None
+
     def load(self) -> None:
         self.books = []
         self.chunks = []
-        self._bm25 = None
+        self.embeddings = None
+        self._invalidate()
 
         if self.state_path.exists():
             try:
@@ -75,13 +89,15 @@ class Library:
                     if line:
                         self.chunks.append(Chunk.from_dict(json.loads(line)))
 
+        self.embeddings = EmbeddingIndex.load(self.embeddings_path)
+
     def save(self) -> None:
         payload = {"version": _FORMAT_VERSION, "books": [book.to_dict() for book in self.books]}
         self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
         with self.chunks_path.open("w", encoding="utf-8") as handle:
             for chunk in self.chunks:
                 handle.write(json.dumps(chunk.to_dict(), ensure_ascii=False) + "\n")
-        self._bm25 = None
+        self._invalidate()
 
     # -- ingest --------------------------------------------------------------------
 
@@ -125,6 +141,7 @@ class Library:
         self.books.append(book)
         self.chunks.extend(new_chunks)
         self.save()
+        self._prune_embeddings()
 
         if on_progress:
             on_progress(f"indexed {len(new_chunks)} chunk(s)")
@@ -135,6 +152,7 @@ class Library:
         self.books = [existing for existing in self.books if existing.id != book.id]
         self.chunks = [chunk for chunk in self.chunks if chunk.book_id != book.id]
         self.save()
+        self._prune_embeddings()
         return book
 
     # -- lookup --------------------------------------------------------------------
@@ -175,6 +193,79 @@ class Library:
             self._bm25 = BM25([tokenize(f"{chunk.section} {chunk.text}") for chunk in self.chunks])
         return self._bm25
 
+    @property
+    def chunk_map(self) -> dict[str, Chunk]:
+        if self._chunk_by_id is None:
+            self._chunk_by_id = {chunk.id: chunk for chunk in self.chunks}
+        return self._chunk_by_id
+
+    @property
+    def has_embeddings(self) -> bool:
+        return self.embeddings is not None and len(self.embeddings) > 0
+
+    @property
+    def embeddings_model(self) -> str | None:
+        return self.embeddings.model if self.embeddings is not None else None
+
+    def build_embeddings(
+        self,
+        embedder: Any,
+        *,
+        force: bool = False,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Embed every chunk that does not have a vector yet. Returns how many were new."""
+        if not self.chunks:
+            return 0
+
+        reuse = self.embeddings if (self.embeddings is not None and not force) else None
+        if reuse is not None and reuse.model != embedder.model:
+            reuse = None  # a different model means the old vectors are not comparable
+
+        chunk_ids = [chunk.id for chunk in self.chunks]
+        vectors: list[list[float] | None] = [None] * len(self.chunks)
+        if reuse is not None:
+            for position, chunk_id in enumerate(chunk_ids):
+                cached = reuse.vector_for(chunk_id)
+                if cached is not None:
+                    vectors[position] = cached
+
+        missing = [position for position, vector in enumerate(vectors) if vector is None]
+        if missing:
+            texts = [f"{self.chunks[position].section} {self.chunks[position].text}" for position in missing]
+            embedded = embedder.embed(texts, on_progress=on_progress)
+            if len(embedded) != len(missing):
+                raise LibraryError("embedding provider returned the wrong number of vectors")
+            for position, vector in zip(missing, embedded, strict=False):
+                vectors[position] = vector
+
+        index = EmbeddingIndex(
+            embedder.model,
+            chunk_ids,
+            [vector or [] for vector in vectors],
+        )
+        self.embeddings = index
+        index.save(self.embeddings_path)
+        return len(missing)
+
+    def _prune_embeddings(self) -> None:
+        """Drop vectors whose chunks no longer exist (a book was removed or replaced)."""
+        if self.embeddings is None:
+            return
+        valid = {chunk.id for chunk in self.chunks}
+        kept = [chunk_id for chunk_id in self.embeddings.chunk_ids if chunk_id in valid]
+        if len(kept) == len(self.embeddings.chunk_ids):
+            return
+        if not kept:
+            self.embeddings = None
+            self.embeddings_path.unlink(missing_ok=True)
+            return
+        vectors = [self.embeddings.vector_for(chunk_id) or [] for chunk_id in kept]
+        self.embeddings = EmbeddingIndex(
+            self.embeddings.model, kept, vectors, created_at=self.embeddings.created_at
+        )
+        self.embeddings.save(self.embeddings_path)
+
     def search(
         self,
         query: str,
@@ -183,8 +274,13 @@ class Library:
         top_k: int = 6,
         per_book_cap: int = 3,
         min_score: float = 0.0,
+        query_vector: Sequence[float] | None = None,
+        rrf_k: int = DEFAULT_RRF_K,
     ) -> list[tuple[Chunk, float]]:
         """Rank chunks against ``query``, optionally restricted to some books.
+
+        When ``query_vector`` is supplied *and* embeddings exist, lexical and semantic
+        rankings are fused with Reciprocal Rank Fusion. Otherwise this is plain BM25.
 
         ``per_book_cap`` keeps a single verbose book from monopolising the context,
         which is what makes cross-textbook answers possible.
@@ -195,20 +291,36 @@ class Library:
         allowed_ids = {book.id for book in books} if books is not None else None
         if allowed_ids is not None:
             allowed = {index for index, chunk in enumerate(self.chunks) if chunk.book_id in allowed_ids}
+            # The vector index is keyed by chunk id, not by book id.
+            allowed_chunk_ids = {self.chunks[index].id for index in allowed}
         else:
             allowed = None
+            allowed_chunk_ids = None
 
         # Ask for more than we need, then thin out per-book duplicates.
-        ranked = self.index.top_k(
-            query, k=top_k * max(per_book_cap, 1) * 2, allowed=allowed, min_score=min_score
-        )
-        if not ranked:
-            return []
+        candidate_k = min(max(top_k * max(per_book_cap, 1) * 2, top_k, 20), 200)
+        lexical = self.index.top_k(query, k=candidate_k, allowed=allowed, min_score=min_score)
+        lexical_ids = [self.chunks[position].id for position, _score in lexical]
 
+        fused: list[tuple[str, float]] = []
+        if query_vector is not None and self.has_embeddings and self.embeddings is not None:
+            semantic = self.embeddings.search(query_vector, k=candidate_k, allowed=allowed_chunk_ids)
+            semantic_ids = [chunk_id for chunk_id, _score in semantic]
+            if semantic_ids:
+                fused = reciprocal_rank_fusion([lexical_ids, semantic_ids], k=rrf_k)
+
+        if not fused:
+            fused = [(self.chunks[position].id, score) for position, score in lexical]
+
+        chunk_map = self.chunk_map
         per_book: Counter[str] = Counter()
         results: list[tuple[Chunk, float]] = []
-        for index, score in ranked:
-            chunk = self.chunks[index]
+        for chunk_id, score in fused:
+            chunk = chunk_map.get(chunk_id)
+            if chunk is None:  # stale vector from a removed book
+                continue
+            if allowed_ids is not None and chunk.book_id not in allowed_ids:
+                continue
             if per_book[chunk.book_id] >= per_book_cap:
                 continue
             per_book[chunk.book_id] += 1
@@ -224,5 +336,7 @@ class Library:
             "books": len(self.books),
             "pages": sum(book.pages for book in self.books),
             "chunks": len(self.chunks),
+            "embeddings": len(self.embeddings) if self.embeddings is not None else 0,
+            "embedding_model": self.embeddings_model or "",
             "root": str(self.root),
         }

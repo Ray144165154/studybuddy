@@ -15,6 +15,7 @@ page-level citations, and let the assistant keep track of what you struggle with
 from __future__ import annotations
 
 from .chunk import Chunker, chunk_document, detect_section
+from .embed import Embedder, EmbeddingIndex, cosine, reciprocal_rank_fusion
 from .errors import (
     AgentError,
     LibraryError,
@@ -46,15 +47,19 @@ from .types import (
     Usage,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "StudyBuddy",
+    "Embedder",
+    "EmbeddingIndex",
     "Library",
     "Memory",
     "LLM",
     "BM25",
     "tokenize",
+    "cosine",
+    "reciprocal_rank_fusion",
     "read_pdf",
     "PdfDocument",
     "PdfPage",

@@ -5,6 +5,27 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
+### 新增
+
+- **混合检索（可选）**：接任意 OpenAI 兼容的 `/embeddings` 端点后，词法 BM25 与向量
+  余弦相似度用 Reciprocal Rank Fusion 融合。解决「问法和书上写法不一样就搜不到」的问题。
+- `Embedder` 客户端：批处理、重试（尊重 `Retry-After`）、`dimensions` 截断、Ollama 兼容。
+- `EmbeddingIndex`：base64 float32 持久化到 `.studybuddy/embeddings.jsonl`，模型变更自动重建。
+- `studybuddy index [--force]` 建立向量索引；`studybuddy ask --no-semantic` 关闭混合检索。
+- `studybuddy stats` 显示向量索引状态。
+- 语义检索失败时自动退回词法检索并在 `Answer.warnings` 中说明，不会让提问失败。
+
+### 修复
+
+- 按教材过滤时，语义召回一侧错误地传入了「书 ID」而非「chunk ID」，导致带 `--book`
+  的混合检索丢失全部向量结果。
+
+### 变更
+
+- 测试 156 → 206，新增 31 个 embedding 单元测试与 16 个混合检索/降级集成测试。
+
 ### 修复
 
 - **中文 PDF 字符合成**：部分 PDF 生成器把汉字映射到 Kangxi 部首区

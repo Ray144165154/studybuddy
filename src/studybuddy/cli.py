@@ -48,6 +48,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-m", "--model", default=os.environ.get("STUDYBUDDY_MODEL", "gpt-4o-mini"))
     parser.add_argument("-b", "--base-url", default=os.environ.get("STUDYBUDDY_BASE_URL"))
     parser.add_argument("-k", "--api-key", default=None)
+    parser.add_argument(
+        "-e",
+        "--embed-model",
+        default=os.environ.get("STUDYBUDDY_EMBED_MODEL"),
+        help="embedding 模型，例如 text-embedding-3-small / nomic-embed-text（用于混合检索）",
+    )
+    parser.add_argument(
+        "--embed-base-url",
+        default=os.environ.get("STUDYBUDDY_EMBED_BASE_URL"),
+        help="embedding 端点，默认复用 --base-url",
+    )
     parser.add_argument("--version", action="version", version=f"studybuddy {__version__}")
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -57,6 +68,9 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("-c", "--course", default="", help="所属课程，例如 高等数学")
     add.add_argument("-t", "--title", default=None, help="书名（默认取 PDF 元数据或文件名）")
     add.add_argument("-q", "--quiet", action="store_true")
+
+    index_cmd = sub.add_parser("index", help="为已导入教材建立向量索引（混合检索）")
+    index_cmd.add_argument("--force", action="store_true", help="忽略已有向量，全部重建")
 
     books = sub.add_parser("books", help="列出已导入的教材")
     books.add_argument("--json", action="store_true")
@@ -69,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--book", action="append", default=None, help="限定教材，可重复")
     ask.add_argument("--top-k", type=int, default=6)
     ask.add_argument("--no-memory", action="store_true", help="不读取也不写入记忆")
+    ask.add_argument("--no-semantic", action="store_true", help="只用词法检索，不做向量混合")
     ask.add_argument("--quiet", action="store_true", help="只输出答案正文")
 
     quiz = sub.add_parser("quiz", help="生成自测题")
@@ -111,7 +126,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _warn(messages: list[str]) -> None:
+    for message in messages:
+        print(_style(f"注意: {message}", YELLOW), file=sys.stderr)
+
+
 def _print_answer(answer: Any, *, quiet: bool) -> None:
+    _warn(getattr(answer, "warnings", []))
     print(answer.text)
     if quiet or not answer.sources:
         return
@@ -146,6 +167,17 @@ def _cmd_add(buddy: StudyBuddy, args: argparse.Namespace) -> int:
             failures += 1
             continue
         print(f"✓ {book.title}  {book.pages} 页, {book.chunks} 个片段  id={book.id}")
+        if buddy.library.has_embeddings:
+            print(_style(f"  已建立向量索引（{buddy.library.embeddings_model}）", DIM))
+        elif buddy.embedding_error:
+            print(
+                _style(
+                    f"  向量索引失败（{buddy.embedding_error}），仍可用词法检索；"
+                    "稍后可用 studybuddy index 重试",
+                    YELLOW,
+                ),
+                file=sys.stderr,
+            )
     return 1 if failures else 0
 
 
@@ -233,6 +265,10 @@ def _cmd_stats(buddy: StudyBuddy, _args: argparse.Namespace) -> int:
     stats = buddy.library.stats()
     memory = buddy.memory.stats()
     print(f"书库: {stats['books']} 本, {stats['pages']} 页, {stats['chunks']} 个片段")
+    if stats["embeddings"]:
+        print(f"向量: {stats['embeddings']} 个片段已索引（{stats['embedding_model']}）")
+    else:
+        print(_style("向量: 未建立（studybuddy index 可启用混合检索）", DIM))
     detail = (
         f"记忆: {memory['facts']} 条事实, {memory['episodes']} 条提问, "
         f"{memory['topics']} 个话题, {memory['due']} 个到期"
@@ -256,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             api_key=args.api_key,
             base_url=args.base_url,
+            embedding_model=args.embed_model,
+            embedding_base_url=args.embed_base_url,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"初始化失败: {exc}", file=sys.stderr)
@@ -286,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 books=args.book,
                 top_k=args.top_k,
                 remember=not args.no_memory,
+                semantic=not args.no_semantic,
             )
             _print_answer(answer, quiet=args.quiet)
             return 0
@@ -302,7 +341,21 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "compare":
             result = buddy.compare(args.concept_a, args.concept_b)
+            _warn(result.warnings)
             print(result.with_citations())
+            return 0
+
+        if args.command == "index":
+
+            def embed_progress(done: int, total: int) -> None:
+                print(_style(f"  向量化 {done}/{total}", DIM))
+
+            added = buddy.build_index(force=args.force, on_progress=embed_progress)
+            model = buddy.library.embeddings_model
+            if added:
+                print(f"✓ 已为 {added} 个片段建立向量索引（{model}）")
+            else:
+                print(f"✓ 向量索引已是最新（{model}）")
             return 0
 
         if args.command == "grade":
