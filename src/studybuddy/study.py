@@ -31,6 +31,33 @@ from .types import Answer, Book, Chunk, Message, Source
 __all__ = ["StudyBuddy", "QuizQuestion", "Quiz", "Comparison", "ReviewItem"]
 
 _CITATION = re.compile(r"\[(\d{1,2})\]")
+# "条件概率和事件的独立性" asks about two things; BM25 would otherwise reward the
+# document that matches whichever half has more words, and drop the other half.
+_COMPOUND = re.compile(r"\s*(?:以及|和|与|、)\s*")
+
+
+_QUESTION_TAIL = re.compile(
+    r"(之间)?(?:有什么(?:关系|区别|不同|联系|用)?|是什么|有哪些(?:形式|区别)?|如何|怎么(?:样)?|为什么|怎么理解)$"
+)
+
+
+def split_query(text: str) -> list[str]:
+    """Split a compound Chinese question into its topical parts (best effort).
+
+    Only *topics* are kept: interrogative tails are stripped and fragments shorter
+    than four characters are dropped, so "中心极限定理的条件和结论是什么" does not
+    degenerate into a useless "结论是什么" query.
+    """
+    if len(text.strip()) < 8:
+        return []
+    parts: list[str] = []
+    for raw in _COMPOUND.split(text):
+        part = raw.strip(" ？?。，,；;：:")
+        part = _QUESTION_TAIL.sub("", part).strip(" 的")
+        if len(part) >= 4:
+            parts.append(part)
+    return parts if len(parts) >= 2 else []
+
 
 SYSTEM_PROMPT = """你是一位严谨、耐心的大学学业辅导老师，正在辅导一名大学生理解他自己上传的教材。
 
@@ -215,14 +242,12 @@ class StudyBuddy:
             raise StudyError("书库是空的 -- 先用 `studybuddy add` 导入一本教材")
 
         selected = self.library.resolve_books(books)
-        query_vector, warning = self._query_vector(question) if semantic else (None, None)
-        hits = self.library.search(
+        hits, warning = self._retrieve(
             question,
             books=selected,
             top_k=top_k,
             per_book_cap=per_book_cap,
-            query_vector=query_vector,
-            rrf_k=self.rrf_k,
+            semantic=semantic,
         )
         sources = [
             Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
@@ -278,6 +303,44 @@ class StudyBuddy:
         blocks.append("")
         blocks.append("如果片段不足以回答，请直接说明缺什么；引用时用 [编号]。")
         return "\n".join(blocks)
+
+    def _retrieve(
+        self,
+        question: str,
+        *,
+        books: list[Book],
+        top_k: int,
+        per_book_cap: int,
+        semantic: bool,
+    ) -> tuple[list[tuple[Chunk, float]], str | None]:
+        """Search, then make sure a compound question covers all of its parts."""
+        warning: str | None = None
+
+        def search(text: str, limit: int) -> list[tuple[Chunk, float]]:
+            nonlocal warning
+            vector, warn = self._query_vector(text) if semantic else (None, None)
+            warning = warning or warn
+            return self.library.search(
+                text,
+                books=books,
+                top_k=limit,
+                per_book_cap=per_book_cap,
+                query_vector=vector,
+                rrf_k=self.rrf_k,
+            )
+
+        primary = search(question, top_k)
+        head = primary[:2]
+        seen = {chunk.id for chunk, _score in head}
+        coverage: list[tuple[Chunk, float]] = []
+        for part in split_query(question):
+            for chunk, score in search(part, max(2, top_k // 3)):
+                if chunk.id in seen:
+                    continue
+                seen.add(chunk.id)
+                coverage.append((chunk, score))
+        tail = [(chunk, score) for chunk, score in primary[2:] if chunk.id not in seen]
+        return (head + coverage + tail)[:top_k], warning
 
     # -- memory --------------------------------------------------------------------
 

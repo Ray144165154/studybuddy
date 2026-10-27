@@ -9,6 +9,7 @@ from pathlib import Path
 
 from studybuddy import Book, Chunk, Library, Memory, StudyBuddy
 from studybuddy.errors import StudyError
+from studybuddy.study import split_query
 from support import ScriptedLLM, make_textbook, says
 
 MEMORY_JSON = json.dumps(
@@ -99,6 +100,24 @@ class StudyTestCase(unittest.TestCase):
             library=self.library,
             memory=self.memory,
         )
+
+
+class TestQuerySplit(unittest.TestCase):
+    def test_two_topics_are_split(self) -> None:
+        self.assertEqual(
+            split_query("条件概率和事件的独立性有什么关系"),
+            ["条件概率", "事件的独立性"],
+        )
+
+    def test_interrogative_tail_does_not_produce_a_fragment(self) -> None:
+        # "条件和结论" are two aspects of one topic, not two topics.
+        self.assertEqual(split_query("中心极限定理的条件和结论是什么？"), [])
+
+    def test_short_question_is_not_split(self) -> None:
+        self.assertEqual(split_query("熵与信息"), [])
+
+    def test_single_topic_is_not_split(self) -> None:
+        self.assertEqual(split_query("矩阵乘法为什么不满足交换律"), [])
 
 
 class TestAsk(StudyTestCase):
@@ -192,6 +211,48 @@ class TestAsk(StudyTestCase):
         buddy.ask("第一个问题")
         buddy.ask("第二个问题")
         self.assertIn("本次会话", user_prompt(llm, 2))
+
+
+class TestCompoundCoverage(StudyTestCase):
+    def test_compound_question_retrieves_both_topics(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="条件概率",
+                text="条件概率是在已知事件发生的条件下另一事件发生的概率。",
+            ),
+            Chunk(
+                id="m:p2:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=2,
+                section="独立性",
+                text="两个事件相互独立是指联合概率等于概率之积。",
+            ),
+            Chunk(
+                id="m:p3:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=3,
+                section="其他",
+                text="矩阵乘法满足结合律。",
+            ),
+        ]
+        self.library.save()
+        buddy = self.buddy(says("答 [1][2]"), says(MEMORY_JSON))
+        hits, _warning = buddy._retrieve(
+            "条件概率和事件的独立性有什么关系",
+            books=buddy.library.books,
+            top_k=4,
+            per_book_cap=3,
+            semantic=False,
+        )
+        ids = [chunk.id for chunk, _score in hits]
+        self.assertIn("m:p1:0", ids)
+        self.assertIn("m:p2:0", ids)
 
 
 class TestQuiz(StudyTestCase):

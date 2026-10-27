@@ -180,6 +180,18 @@ class TestAddDocument(unittest.TestCase):
         self.library.add_document(title="书", pages=[(1, "内容")], on_progress=messages.append)
         self.assertTrue(any("indexed" in message for message in messages))
 
+    def test_single_book_is_not_starved_by_the_cap(self) -> None:
+        pages = [(i, f"第{i}节 概率的定义与性质之讨论。") for i in range(1, 11)]
+        self.library.add_document(title="书", pages=pages)
+        hits = self.library.search("概率的定义", top_k=6, per_book_cap=3)
+        self.assertEqual(len(hits), 6)
+
+    def test_multi_book_still_respects_the_cap(self) -> None:
+        self.library.add_document(title="甲", pages=[(1, "概率 定义 性质。")])
+        self.library.add_document(title="乙", pages=[(1, "概率 定义 性质。")])
+        hits = self.library.search("概率 定义", top_k=6, per_book_cap=1)
+        self.assertLessEqual(len(hits), 2)
+
     def test_navigation_pages_are_skipped_by_default(self) -> None:
         self.library.add_document(
             title="书",

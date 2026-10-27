@@ -323,6 +323,11 @@ class Library:
             return []
 
         allowed_ids = {book.id for book in books} if books is not None else None
+        # The per-book cap exists to stop one verbose book from crowding out the
+        # others. With only one book in scope it would only starve the context window.
+        scope = len(allowed_ids) if allowed_ids is not None else len(self.books)
+        if scope == 1:
+            per_book_cap = max(per_book_cap, top_k)
         if allowed_ids is not None or not include_nav:
             allowed = {
                 index

@@ -239,7 +239,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 228 个测试
+make check       # ruff + mypy --strict + 235 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -284,6 +284,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-228 offline tests, MIT licensed.
+235 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
