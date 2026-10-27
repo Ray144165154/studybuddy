@@ -56,6 +56,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="embedding 模型，例如 text-embedding-3-small / nomic-embed-text（用于混合检索）",
     )
     parser.add_argument(
+        "--embed-provider",
+        choices=["auto", "api", "local"],
+        default=os.environ.get("STUDYBUDDY_EMBED_PROVIDER", "auto"),
+        help="embedding 来源：local 用本地 fastembed（无需 key），api 用 OpenAI 兼容端点",
+    )
+    parser.add_argument(
         "--embed-base-url",
         default=os.environ.get("STUDYBUDDY_EMBED_BASE_URL"),
         help="embedding 端点，默认复用 --base-url",
@@ -90,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--top-k", type=int, default=6)
     ask.add_argument("--no-memory", action="store_true", help="不读取也不写入记忆")
     ask.add_argument("--no-semantic", action="store_true", help="只用词法检索，不做向量混合")
+    ask.add_argument("--rewrite", action="store_true", help="先让模型改写检索式（多一次小调用，难问题更准）")
     ask.add_argument("--quiet", action="store_true", help="只输出答案正文")
 
     quiz = sub.add_parser("quiz", help="生成自测题")
@@ -341,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             embedding_model=args.embed_model,
             embedding_base_url=args.embed_base_url,
+            embedding_provider=None if args.embed_provider == "auto" else args.embed_provider,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"初始化失败: {exc}", file=sys.stderr)
@@ -373,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
                 top_k=args.top_k,
                 remember=not args.no_memory,
                 semantic=not args.no_semantic,
+                rewrite=args.rewrite,
             )
             _print_answer(answer, quiet=args.quiet)
             return 0

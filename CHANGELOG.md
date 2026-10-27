@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-27
+
+### 新增
+
+- **本地 embedding（无需 API key）**：`pip install "studybuddy[local-embed]"` 后
+  `STUDYBUDDY_EMBED_PROVIDER=local studybuddy index`，用 `BAAI/bge-small-zh-v1.5`
+  在 CPU 上做语义检索。解决 DeepSeek 没有 `/embeddings` 端点、又想用混合检索的问题。
+- 向量索引会记录来源（`provider: local|api`），换设备/重建时自动匹配正确的后端。
+- `--embed-provider {auto,api,local}` 与 `STUDYBUDDY_EMBED_PROVIDER`。
+
+### 设计说明
+
+- `fastembed` 只作为**可选 extra**，不是默认依赖：它带来 onnxruntime（~50MB）和
+  首次 ~100MB 的模型下载，会让只想用词法检索的人付出不必要的安装成本。
+- 未安装时给出明确提示并自动退回 BM25，不抛栈。
+
 ## [0.3.2] - 2026-10-27
 
 ### 新增

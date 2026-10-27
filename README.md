@@ -122,13 +122,29 @@ API Key 解析顺序：`--api-key` → `STUDYBUDDY_API_KEY` → `OPENAI_API_KEY`
 默认是纯词法检索（BM25 + 中文二元组）：术语准确、完全离线，但**同义改写会漏召回**——
 你问「为什么求导和微分是一回事」，某页只写「导数与微分的关系」，词法匹配就找不到。
 
-接一个 embedding 端点即可补上这一块：
+补语义检索有两条路，都不影响不装的人：
+
+### 本地模式（不需要 API key，推荐）
+
+```bash
+pip install "studybuddy[local-embed]"     # 额外装 onnxruntime + 模型运行时
+export STUDYBUDDY_EMBED_PROVIDER=local
+studybuddy index                          # 首次会下载 ~100MB 模型并缓存
+```
+
+用的是 `BAAI/bge-small-zh-v1.5`（中文小模型），CPU 上每页几十毫秒。
+国内网络建议先设镜像：`export HF_ENDPOINT=https://hf-mirror.com`。
+
+### API 模式（任意 OpenAI 兼容端点）
 
 ```bash
 export STUDYBUDDY_EMBED_MODEL=text-embedding-3-small
 export STUDYBUDDY_EMBED_BASE_URL=https://api.openai.com/v1   # 可以和对话模型不同厂商
 studybuddy index
 ```
+
+> 为什么本地模式不是默认依赖？因为 `fastembed` 会带进 onnxruntime（~50MB）、首次还要
+> 下载模型，把 `pip install` 从几秒变成几分钟。**不装就自动退回词法检索**，一行代码都不用改。
 
 之后每次提问会同时跑两路召回，再用 **RRF（Reciprocal Rank Fusion）** 融合：
 
@@ -241,7 +257,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 240 个测试
+make check       # ruff + mypy --strict + 257 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -286,6 +302,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-240 offline tests, MIT licensed.
+257 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

@@ -286,6 +286,73 @@ class TestCompoundCoverage(StudyTestCase):
         self.assertIn("m:p10:0", ids)
 
 
+REWRITE_JSON = json.dumps(["导数 微分 关系", "求导 定义"], ensure_ascii=False)
+
+
+class TestQueryRewrite(StudyTestCase):
+    def test_rewrite_queries_parses_json(self) -> None:
+        buddy = self.buddy(says(REWRITE_JSON))
+        self.assertEqual(buddy.rewrite_queries("为什么求导和微分是一回事"), ["导数 微分 关系", "求导 定义"])
+
+    def test_rewrite_tolerates_markdown_fence(self) -> None:
+        buddy = self.buddy(says('```json\n["导数 定义"]\n```'))
+        self.assertEqual(buddy.rewrite_queries("导数是什么"), ["导数 定义"])
+
+    def test_invalid_rewrite_returns_empty(self) -> None:
+        self.assertEqual(self.buddy(says("抱歉，我无法输出")).rewrite_queries("q"), [])
+
+    def test_rewrite_drops_duplicates_and_the_original(self) -> None:
+        buddy = self.buddy(says(json.dumps(["原问题", "原问题", "导数 定义"], ensure_ascii=False)))
+        self.assertEqual(buddy.rewrite_queries("原问题"), ["导数 定义"])
+
+    def test_rewrite_failure_does_not_break_ask(self) -> None:
+        class FlakyLLM(ScriptedLLM):
+            def complete(self, messages, tools=None):  # type: ignore[no-untyped-def]
+                if len(self.calls) == 0:
+                    self.calls.append(list(messages))
+                    raise RuntimeError("rewrite endpoint down")
+                return super().complete(messages, tools)
+
+        llm = FlakyLLM(says("答 [1]"), says(MEMORY_JSON))
+        answer = StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory).ask(
+            "什么是导数？", rewrite=True
+        )
+        self.assertEqual(answer.text, "答 [1]")
+
+    def test_rewritten_query_brings_in_new_evidence(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="1.1 导数",
+                text="导数刻画瞬时变化率。",
+            ),
+            Chunk(
+                id="m:p2:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=2,
+                section="1.2 微分",
+                text="微分与导数互为表里，微分是改变量的线性主部。",
+            ),
+        ]
+        self.library.save()
+        llm = ScriptedLLM(says(REWRITE_JSON), says("答 [1][2]"), says(MEMORY_JSON))
+        buddy = StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory)
+        answer = buddy.ask("为什么求导和微分是一回事", rewrite=True)
+        pages = {source.chunk.page for source in answer.sources}
+        self.assertIn(1, pages)
+        self.assertIn(2, pages)
+        self.assertEqual(llm.request_count, 3)
+
+    def test_rewrite_is_off_by_default(self) -> None:
+        llm = ScriptedLLM(says("答 [1]"), says(MEMORY_JSON))
+        StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory).ask("什么是导数？")
+        self.assertEqual(llm.request_count, 2)
+
+
 class TestQuiz(StudyTestCase):
     def test_quiz_parses_questions(self) -> None:
         quiz = self.buddy(says(QUIZ_JSON)).quiz(topic="导数", count=2)

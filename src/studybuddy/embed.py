@@ -245,10 +245,12 @@ class EmbeddingIndex:
         vectors: Sequence[Sequence[float]],
         *,
         created_at: str = "",
+        provider: str = "api",
     ) -> None:
         if len(chunk_ids) != len(vectors):
             raise ValueError("chunk_ids and vectors must be the same length")
         self.model = model
+        self.provider = provider
         self.chunk_ids = list(chunk_ids)
         self.vectors = [array.array("f", vector) for vector in vectors]
         self.dimension = len(self.vectors[0]) if self.vectors else 0
@@ -326,6 +328,7 @@ class EmbeddingIndex:
             meta = {
                 "kind": "meta",
                 "model": self.model,
+                "provider": self.provider,
                 "dimension": self.dimension,
                 "chunks": len(self.chunk_ids),
                 "created_at": self.created_at,
@@ -343,6 +346,7 @@ class EmbeddingIndex:
             return None
 
         model = ""
+        provider = "api"
         chunk_ids: list[str] = []
         vectors: list[list[float]] = []
         created_at = ""
@@ -355,6 +359,7 @@ class EmbeddingIndex:
                     entry = json.loads(line)
                     if entry.get("kind") == "meta":
                         model = str(entry.get("model") or "")
+                        provider = str(entry.get("provider") or "api")
                         created_at = str(entry.get("created_at") or "")
                         continue
                     chunk_ids.append(str(entry["chunk_id"]))
@@ -364,4 +369,4 @@ class EmbeddingIndex:
 
         if not model or not chunk_ids:
             return None
-        return cls(model, chunk_ids, vectors, created_at=created_at)
+        return cls(model, chunk_ids, vectors, created_at=created_at, provider=provider)

@@ -283,6 +283,10 @@ class Library:
     def embeddings_model(self) -> str | None:
         return self.embeddings.model if self.embeddings is not None else None
 
+    @property
+    def embeddings_provider(self) -> str | None:
+        return self.embeddings.provider if self.embeddings is not None else None
+
     def build_embeddings(
         self,
         embedder: Any,
@@ -319,6 +323,7 @@ class Library:
             embedder.model,
             chunk_ids,
             [vector or [] for vector in vectors],
+            provider=getattr(embedder, "provider", "api"),
         )
         self.embeddings = index
         index.save(self.embeddings_path)
@@ -427,5 +432,6 @@ class Library:
             "nav_chunks": sum(1 for chunk in self.chunks if chunk.nav),
             "embeddings": len(self.embeddings) if self.embeddings is not None else 0,
             "embedding_model": self.embeddings_model or "",
+            "embedding_provider": self.embeddings_provider or "",
             "root": str(self.root),
         }

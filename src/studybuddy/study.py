@@ -24,6 +24,7 @@ from typing import Any
 from .embed import DEFAULT_RRF_K, Embedder
 from .errors import StudyError
 from .llm import LLM
+from .local_embed import DEFAULT_LOCAL_MODEL, LocalEmbedder
 from .memory import Memory
 from .store import Library
 from .types import Answer, Book, Chunk, Message, Source
@@ -74,6 +75,23 @@ SUMMARY_SYSTEM = """你是一位擅长做知识梳理的大学助教。你的提
 COMPARE_SYSTEM = """你是一位擅长辨析相近概念的大学老师。你总能一眼看出学生混淆它们的原因。"""
 
 MEMORY_SYSTEM = """你在维护一名学生的学习记忆库。你只输出 JSON，不输出任何解释文字。"""
+
+REWRITE_SYSTEM = """你是教材检索助手。你只输出 JSON 数组，不输出任何解释文字。"""
+
+
+def _loads_json_array(text: str) -> list[str] | None:
+    if not text:
+        return None
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    return [str(item).strip() for item in payload if str(item).strip()]
 
 
 @dataclass(slots=True)
@@ -158,6 +176,7 @@ class StudyBuddy:
         memory: Memory | None = None,
         embedding_model: str | None = None,
         embedding_base_url: str | None = None,
+        embedding_provider: str | None = None,
         embedder: Any = None,
         rrf_k: int = DEFAULT_RRF_K,
     ) -> None:
@@ -172,6 +191,7 @@ class StudyBuddy:
         self._base_url = base_url
         self.embedding_model = embedding_model or os.environ.get("STUDYBUDDY_EMBED_MODEL") or None
         self.embedding_base_url = embedding_base_url or os.environ.get("STUDYBUDDY_EMBED_BASE_URL") or None
+        self.embedding_provider = embedding_provider or os.environ.get("STUDYBUDDY_EMBED_PROVIDER") or None
         self.embedder: Any = embedder
         self.rrf_k = rrf_k
         self.embedding_error: str | None = None
@@ -233,6 +253,7 @@ class StudyBuddy:
         remember: bool = True,
         per_book_cap: int = 3,
         semantic: bool = True,
+        rewrite: bool = False,
     ) -> Answer:
         """Answer a question using the student's textbooks, with page citations."""
         question = question.strip()
@@ -248,6 +269,7 @@ class StudyBuddy:
             top_k=top_k,
             per_book_cap=per_book_cap,
             semantic=semantic,
+            rewrite=rewrite,
         )
         sources = [
             Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
@@ -312,6 +334,7 @@ class StudyBuddy:
         top_k: int,
         per_book_cap: int,
         semantic: bool,
+        rewrite: bool = False,
     ) -> tuple[list[tuple[Chunk, float]], str | None]:
         """Search, then make sure a compound question covers all of its parts."""
         warning: str | None = None
@@ -342,6 +365,13 @@ class StudyBuddy:
                 continue
             seen.add(lead.id)
             coverage.append((lead, 0.0))
+
+        for query in self.rewrite_queries(question) if rewrite else []:
+            for chunk, score in search(query, max(2, top_k // 3)):
+                if chunk.id in seen:
+                    continue
+                seen.add(chunk.id)
+                coverage.append((chunk, score))
 
         for part in split_query(question):
             for chunk, score in search(part, max(2, top_k // 3)):
@@ -582,13 +612,57 @@ class StudyBuddy:
         """Record a self-assessed quiz result and reschedule the topic."""
         return self.memory.grade_topic(topic, correct=correct)
 
+    # -- query rewriting -------------------------------------------------------------
+
+    def rewrite_queries(self, question: str, *, limit: int = 3) -> list[str]:
+        """Ask the model for 2-3 textbook-style search queries.
+
+        Students write "为什么求导和微分是一回事"; textbooks write "导数与微分的关系".
+        One cheap call bridges that gap for difficult questions. Returns an empty
+        list on any failure -- retrieval then proceeds unchanged.
+        """
+        prompt = (
+            "把学生的问题改写成 2-3 个适合在教材里做关键词检索的查询。\n"
+            "要求：保留学科术语，去掉口语和疑问；每个查询 3-12 个字；不要重复原句。\n"
+            '只输出 JSON 数组，例如 ["条件概率 定义", "独立性 判定"]。\n\n'
+            f"问题：{question}"
+        )
+        try:
+            response = self.llm.complete(
+                [Message(role="system", content=REWRITE_SYSTEM), Message(role="user", content=prompt)]
+            )
+        except Exception:  # noqa: BLE001 - rewriting is an optimisation, not a requirement
+            return []
+
+        queries = _loads_json_array(response.text or "") or []
+        cleaned: list[str] = []
+        for query in queries:
+            if query == question or query in cleaned:
+                continue
+            if 2 <= len(query) <= 40:
+                cleaned.append(query)
+        return cleaned[:limit]
+
     # -- embeddings ----------------------------------------------------------------
 
     def ensure_embedder(self) -> Any:
-        """Return the embedding client, creating one from config when possible."""
+        """Return the embedding client, creating one from config when possible.
+
+        ``local`` uses the optional fastembed extra and needs no API key; ``api``
+        uses an OpenAI-compatible ``/embeddings`` endpoint. When the index already
+        exists, the provider it was built with wins, so an existing library keeps
+        working without reconfiguration.
+        """
         if self.embedder is not None:
             return self.embedder
+
         model = self.embedding_model or self.library.embeddings_model
+        provider = self.embedding_provider or self.library.embeddings_provider or "api"
+
+        if provider == "local":
+            self.embedder = LocalEmbedder(model or DEFAULT_LOCAL_MODEL)
+            return self.embedder
+
         if not model:
             return None
         self.embedder = Embedder(
