@@ -3,7 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const source = fs.readFileSync(path.join(__dirname, "../../src/studybuddy/webui/app.js"), "utf8");
+// Git may check files out with CRLF on Windows; helper discovery uses LF markers.
+const source = fs.readFileSync(path.join(__dirname, "../../src/studybuddy/webui/app.js"), "utf8").replace(/\r\n/g, "\n");
 const start = source.indexOf("function escapeHtml");
 const end = source.indexOf("// ---------------------------------------------------------------------------\n// state");
 if (start < 0 || end < 0) {
