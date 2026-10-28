@@ -117,6 +117,15 @@ class TestState(WebTestCase):
         _, data = self.app().dispatch("GET", "/api/state", None, {})
         self.assertEqual(data["suggestions"], [])
 
+    def test_state_reports_writable(self) -> None:
+        _, data = self.app().dispatch("GET", "/api/state", None, {})
+        self.assertTrue(data["writable"])
+
+    def test_state_reports_read_only(self) -> None:
+        app = self.app()
+        with patch("pathlib.Path.write_text", side_effect=OSError("read-only")):
+            self.assertFalse(app.library_writable())
+
     def test_unknown_endpoint(self) -> None:
         status, data = self.app().dispatch("GET", "/api/nope", None, {})
         self.assertEqual(status, 404)
@@ -132,6 +141,23 @@ class TestAsk(WebTestCase):
         self.assertEqual(data["sources"][0]["page"], 10)
         self.assertEqual(data["sources"][0]["book"], "概率论基础")
         self.assertIn("usage", data)
+
+    def test_missing_model_is_explained(self) -> None:
+        from studybuddy import LLM
+
+        buddy = StudyBuddy(
+            self.root,
+            model="deepseek-chat",
+            api_key="",
+            llm=LLM(model="deepseek-chat", api_key="", base_url="http://127.0.0.1:9/v1"),
+            library=self.library,
+            memory=self.memory,
+        )
+        if getattr(buddy.llm, "api_key", "") not in ("", "not-needed"):
+            self.skipTest("environment provides an API key")
+        status, data = WebApp(buddy).dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
+        self.assertEqual(status, 400)
+        self.assertIn("设置", data["error"])
 
     def test_empty_question_is_rejected(self) -> None:
         status, data = self.app().dispatch("POST", "/api/ask", {"question": "  "}, {})

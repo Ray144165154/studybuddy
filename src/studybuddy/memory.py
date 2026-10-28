@@ -16,6 +16,7 @@ and easy to delete if the student wants to forget.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -66,6 +67,7 @@ class Memory:
         self.topics: dict[str, TopicState] = {}
         self.created_at = _iso(_now())
         self.updated_at = self.created_at
+        self.last_save_error: str | None = None
         self.load()
 
     # -- persistence ---------------------------------------------------------------
@@ -90,6 +92,7 @@ class Memory:
         self.updated_at = str(data.get("updated_at") or self.updated_at)
 
     def save(self) -> None:
+        """Persist to disk. A read-only data directory must not break answering."""
         self.updated_at = _iso(_now())
         payload = {
             "version": _FORMAT_VERSION,
@@ -100,7 +103,11 @@ class Memory:
             "episodes": [episode.to_dict() for episode in self.episodes],
             "topics": [topic.to_dict() for topic in self.topics.values()],
         }
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        try:
+            self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        except OSError as exc:
+            self.last_save_error = str(exc)
+            print(f"[memory] 无法保存到 {self.path}: {exc}", file=sys.stderr, flush=True)
 
     # -- profile -------------------------------------------------------------------
 

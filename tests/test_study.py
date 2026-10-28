@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from studybuddy import Book, Chunk, Library, Memory, StudyBuddy
 from studybuddy.errors import StudyError
@@ -391,6 +392,15 @@ class TestQueryRewrite(StudyTestCase):
         llm = ScriptedLLM(says("答 [1]"), says(MEMORY_JSON))
         StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory).ask("什么是导数？")
         self.assertEqual(llm.request_count, 2)
+
+
+class TestMemoryWriteFailure(StudyTestCase):
+    def test_failed_memory_write_does_not_fail_the_answer(self) -> None:
+        buddy = self.buddy(says("答 [1]"), says(MEMORY_JSON))
+        with patch.object(type(self.memory), "save", side_effect=OSError("read-only")):
+            answer = buddy.ask("什么是导数？")
+        self.assertEqual(answer.text, "答 [1]")
+        self.assertTrue(any("记忆" in warning for warning in answer.warnings))
 
 
 class TestQuiz(StudyTestCase):

@@ -472,20 +472,23 @@ class StudyBuddy:
         books = list(dict.fromkeys(source.chunk.book_title for source in answer.sources))[:3]
         topics, facts, summary = self._extract_memory(question, answer.text, books)
 
-        self.memory.record_episode(
-            question,
-            summary=summary or answer.text[:200],
-            topics=topics,
-            books=books,
-        )
-        for topic in topics:
-            self.memory.note_topic(topic)
-        for fact in facts:
-            self.memory.add_fact(
-                fact["text"],
-                topic=fact.get("topic", ""),
-                kind=fact.get("kind", "fact"),
+        try:
+            self.memory.record_episode(
+                question,
+                summary=summary or answer.text[:200],
+                topics=topics,
+                books=books,
             )
+            for topic in topics:
+                self.memory.note_topic(topic)
+            for fact in facts:
+                self.memory.add_fact(
+                    fact["text"],
+                    topic=fact.get("topic", ""),
+                    kind=fact.get("kind", "fact"),
+                )
+        except OSError as exc:  # noqa: BLE001 - the answer is already produced
+            answer.warnings.append(f"记忆没能保存（数据目录不可写：{exc}）")
 
     def _extract_memory(
         self, question: str, answer: str, books: list[str]

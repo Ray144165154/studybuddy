@@ -166,9 +166,20 @@ class WebApp:
             "profile": self.buddy.memory.profile.to_dict(),
             "has_embeddings": library.has_embeddings,
             "suggestions": self.suggestions(),
+            "writable": self.library_writable(),
             "web_ready": self.web_ready,
             "web_provider": self.web_provider,
         }
+
+    def library_writable(self) -> bool:
+        """Can we write to the data directory? Read-only volumes are common."""
+        probe = Path(self.buddy.root) / ".write-probe"
+        try:
+            probe.write_text("ok", "utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
 
     def suggestions(self) -> list[str]:
         """Three questions derived from the book's own section titles.
@@ -222,6 +233,12 @@ class WebApp:
             raise StudyErrorBadRequest(f"问题太长（上限 {_MAX_QUESTION_CHARS} 字）")
         if not self.buddy.library.chunks:
             raise StudyError("书库是空的 -- 先在「书库」里导入一本教材")
+        # Only a real HTTP client needs a key; injected clients (tests, custom
+        # providers) manage their own credentials.
+        from .llm import LLM
+
+        if isinstance(self.buddy.llm, LLM) and not self.llm_ready:
+            raise StudyErrorBadRequest("还没有配置模型：点右上角「设置」粘贴 API Key 后再提问")
 
         with self._lock:
             answer = self.buddy.ask(question, rewrite=rewrite, semantic=semantic, web=web)
@@ -270,11 +287,17 @@ class WebApp:
             raise StudyErrorBadRequest("文件太大（上限 80MB）")
 
         upload_dir = (Path(self.buddy.root) / "uploads").resolve()
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
         temporary = (upload_dir / name).resolve()
         if not temporary.is_relative_to(upload_dir):
             raise StudyErrorBadRequest("文件名不合法（不允许包含路径分隔符）")
-        temporary.write_bytes(raw)
+        try:
+            temporary.write_bytes(raw)
+        except OSError as exc:
+            raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
 
         try:
             with self._lock:

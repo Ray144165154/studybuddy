@@ -275,6 +275,18 @@ function renderWelcome() {
     card.append(row);
   });
 
+  if (!STATE.writable) {
+    card.append(
+      el(
+        "div",
+        "warn",
+        "数据目录不可写：" +
+          STATE.root +
+          "。可以查看教材和提问，但导入教材、保存记忆会失败。请检查目录权限，或换一个数据目录（--root）。",
+      ),
+    );
+  }
+
   card.append(el("div", "foot", "卡住了？点右上角「帮助」，或在终端运行 studybuddy doctor。"));
   messages.append(card);
 }
