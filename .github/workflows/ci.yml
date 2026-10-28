@@ -46,6 +46,9 @@ jobs:
       - name: Frontend syntax check
         run: node --check src/studybuddy/webui/app.js
 
+      - name: Frontend render tests
+        run: node tests/js/render.test.js
+
       - name: Test
         run: python -m unittest discover -s tests -v
 
@@ -86,6 +89,9 @@ jobs:
 
       - name: Frontend syntax check
         run: node --check src/studybuddy/webui/app.js
+
+      - name: Frontend render tests
+        run: node tests/js/render.test.js
 
       - name: Test
         run: python -m unittest discover -s tests -v

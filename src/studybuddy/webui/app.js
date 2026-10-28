@@ -362,10 +362,30 @@ async function ask(question) {
   }
 }
 
+function domainOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (error) {
+    return "";
+  }
+}
+
 function renderAnswer(card, data) {
   card.innerHTML = "";
   const body = el("div", "answer");
-  body.innerHTML = renderMarkdown(data.text || "（模型没有返回内容）");
+
+  // The answer cites web results as [W1]; turn those into links to the source.
+  const webByIndex = new Map((data.web_sources || []).map((item) => [item.index, item]));
+  const html = renderMarkdown(data.text || "（模型没有返回内容）").replace(
+    /\[W(\d{1,2})\]/g,
+    (match, number) => {
+      const item = webByIndex.get(Number(number));
+      if (!item) return match;
+      const url = escapeHtml(item.url);
+      return `<a class="cite cite-web" href="${url}" target="_blank" rel="noopener noreferrer" title="${url}">W${number}</a>`;
+    },
+  );
+  body.innerHTML = html;
   card.append(body);
 
   if (data.warnings && data.warnings.length) {
@@ -380,7 +400,7 @@ function renderAnswer(card, data) {
 
   if (data.web_sources && data.web_sources.length) {
     const web = el("div", "sources");
-    web.append(el("div", "label", "网络来源（非教材内容）"));
+    web.append(el("div", "label", "网络来源（非教材内容，点击在新标签页打开）"));
     const list = el("ol");
     for (const item of data.web_sources) {
       const li = el("li");
@@ -388,8 +408,11 @@ function renderAnswer(card, data) {
       link.href = item.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
+      link.title = item.url;
       link.textContent = item.title || item.url;
       li.append(el("span", "badge-web", "W" + item.index), link);
+      const domain = domainOf(item.url);
+      if (domain) li.append(el("span", "where", "  " + domain));
       list.append(li);
     }
     web.append(list);
