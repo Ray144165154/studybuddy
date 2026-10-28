@@ -14,6 +14,7 @@
     </div>
     <div class="status" id="status">连接中…</div>
     <div class="actions">
+      <button class="ghost" id="btn-help" title="使用帮助">帮助</button>
       <button class="ghost" id="btn-memory">记忆</button>
       <button class="ghost" id="btn-settings">设置</button>
     </div>
@@ -64,6 +65,36 @@
     <div id="memory-body" class="drawer-body"></div>
   </div>
   <div id="scrim" class="scrim" hidden></div>
+
+  <dialog id="help">
+    <div class="dialog help-dialog">
+      <h2>怎么用</h2>
+      <ol class="help-steps">
+        <li><b>接入模型</b>：右上角「设置」→ 点 DeepSeek（或 OpenAI / 本地 Ollama）→ 粘贴 API Key。
+            Key 只存在内存里，重启需要重填。</li>
+        <li><b>导入教材</b>：左侧「导入 PDF 教材」。支持中英文；扫描版（整页是图片）需要先做 OCR，
+            否则会提示「没有可提取的文字」。</li>
+        <li><b>开始提问</b>：底部输入问题，Enter 发送。回答里的 <code>[1]</code> 可以点，
+            会跳到下面的来源（书名 + 页码 + 小节）。</li>
+      </ol>
+      <h3>常见问题</h3>
+      <dl class="faq">
+        <dt>回答里说「教材中未找到」</dt>
+        <dd>说明检索到的片段确实没有相关内容。可以换个说法、加上具体章节名，或勾选「联网搜索」。</dd>
+        <dt>公式显示成方块 / 乱码</dt>
+        <dd>扫描件 OCR 认错符号的片段会标注「公式可能失真」；LaTeX 公式会自动渲染。</dd>
+        <dt>Key 会被保存吗</dt>
+        <dd>不会。只存在当前进程内存，关掉就没了；模型和端点会记住。</dd>
+        <dt>支持哪些模型</dt>
+        <dd>任何 OpenAI 兼容接口：DeepSeek、OpenAI、OpenRouter、Ollama、vLLM。</dd>
+        <dt>还是搞不定</dt>
+        <dd>在终端运行 <code>studybuddy doctor</code>，它会指出缺什么。</dd>
+      </dl>
+      <div class="dialog-actions">
+        <button class="btn primary" id="btn-close-help">知道了</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="settings">
     <form method="dialog" class="dialog">

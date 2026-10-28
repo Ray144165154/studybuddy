@@ -198,10 +198,92 @@ function renderBooks() {
   }
 }
 
+function chips(questions) {
+  const wrap = el("div", "chips");
+  for (const question of questions) {
+    const chip = el("button", "chip", question);
+    chip.onclick = () => {
+      $("question").value = question;
+      $("ask-form").requestSubmit();
+    };
+    wrap.append(chip);
+  }
+  return wrap;
+}
+
+function renderWelcome() {
+  const messages = $("messages");
+  messages.innerHTML = "";
+  if (!STATE) return;
+
+  const needsModel = !STATE.llm_ready;
+  const needsBook = STATE.stats.books === 0;
+
+  if (!needsModel && !needsBook) {
+    const hero = el("div", "empty");
+    hero.append(el("h1", "", "问你的教材"));
+    hero.append(el("p", "", "回答会标出页码，方便翻书核对。"));
+    if (STATE.suggestions && STATE.suggestions.length) {
+      hero.append(el("div", "foot", "试试这些问题："));
+      hero.append(chips(STATE.suggestions));
+    }
+    messages.append(hero);
+    return;
+  }
+
+  const card = el("div", "onboarding");
+  card.append(el("h1", "", "三步开始用"));
+  card.append(el("p", "sub", "教材只在本机解析；只有被检索到的片段会发给模型。"));
+
+  const steps = [
+    {
+      done: !needsModel,
+      title: "接入模型",
+      body: "选择 DeepSeek / OpenAI / 本地 Ollama，粘贴 API Key。Key 只存在内存里。",
+      action: "去配置",
+      onAction: openSettings,
+    },
+    {
+      done: !needsBook,
+      title: "导入教材",
+      body: "PDF 教材（中英文都行）。扫描版需要先 OCR，再导入。",
+      action: "选择 PDF",
+      onAction: () => $("file").click(),
+    },
+    {
+      done: false,
+      title: "开始提问",
+      body: "问教材里的概念、定理、例题。回答会带页码。",
+      action: null,
+      onAction: null,
+    },
+  ];
+
+  steps.forEach((step, index) => {
+    const row = el("div", "step" + (step.done ? " done" : ""));
+    const mark = el("span", "step-mark", step.done ? "✓" : String(index + 1));
+    row.append(mark);
+    const body = el("div", "step-body");
+    body.append(el("div", "step-title", step.title));
+    body.append(el("div", "step-desc", step.body));
+    row.append(body);
+    if (step.action) {
+      const button = el("button", "btn tiny", step.action);
+      button.onclick = step.onAction;
+      row.append(button);
+    }
+    card.append(row);
+  });
+
+  card.append(el("div", "foot", "卡住了？点右上角「帮助」，或在终端运行 studybuddy doctor。"));
+  messages.append(card);
+}
+
 async function refresh() {
   STATE = await api("/api/state");
   renderStatus();
   renderBooks();
+  if (!$("messages").querySelector(".bubble, .onboarding")) renderWelcome();
   const webBox = $("web");
   if (!STATE.web_ready) {
     webBox.disabled = true;
@@ -556,6 +638,8 @@ $("file").addEventListener("change", (event) => {
   event.target.value = "";
 });
 
+$("btn-help").onclick = () => $("help").showModal();
+$("btn-close-help").onclick = () => $("help").close();
 $("btn-memory").onclick = openMemory;
 $("btn-close-drawer").onclick = closeMemory;
 $("scrim").onclick = closeMemory;

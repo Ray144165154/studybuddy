@@ -160,6 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ui.add_argument("-p", "--port", type=int, default=8765)
     ui.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
 
+    sub.add_parser("doctor", help="环境自检：检查模型、Key、书库、搜索是否就绪")
     sub.add_parser("stats", help="显示书库与记忆概况")
     return parser
 
@@ -340,6 +341,73 @@ def _cmd_profile(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(buddy: StudyBuddy, _args: argparse.Namespace) -> int:
+    """新手最需要的一条命令：告诉我哪里没配好、下一步该敲什么。"""
+    import platform
+    import sys
+
+    ok = _style("✓", "[32m")
+    bad = _style("✗", "[31m")
+    info = _style("·", DIM)
+    hints: list[str] = []
+
+    print(f"studybuddy {__version__} · 环境自检")
+    print()
+
+    py = platform.python_version()
+    py_ok = sys.version_info >= (3, 10)
+    print(f"  {ok if py_ok else bad} Python {py}（{platform.system()}）")
+    if not py_ok:
+        hints.append("升级到 Python 3.10 或更高版本：https://www.python.org/downloads/")
+
+    root = buddy.library.root
+    books = len(buddy.library.books)
+    chunks = len(buddy.library.chunks)
+    print(f"  {info} 数据目录 {root}")
+    print(f"  {info} 书库 {books} 本 / {chunks} 个片段")
+    if books == 0:
+        hints.append(
+            '导入一本教材：studybuddy add "你的教材.pdf" -c 课程名（扫描版先 OCR，再用 studybuddy add-text）'
+        )
+
+    key_set = bool(getattr(buddy.llm, "api_key", "")) and getattr(buddy.llm, "api_key", "") != "not-needed"
+    base_url = getattr(buddy.llm, "base_url", "")
+    print(f"  {ok if key_set else bad} 模型 {buddy.model} @ {base_url}")
+    if not key_set:
+        hints.append(
+            "配置 API Key：export STUDYBUDDY_API_KEY=sk-...  "
+            "（DeepSeek 再加 STUDYBUDDY_BASE_URL=https://api.deepseek.com/v1）"
+        )
+
+    try:
+        from .search import build_search
+
+        client = build_search(buddy.search_provider)
+        print(f"  {info} 联网搜索 {getattr(client, 'name', '未启用')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  {bad} 联网搜索不可用：{exc}")
+
+    if buddy.library.has_embeddings:
+        embeddings_state = f"已建立（{buddy.library.embeddings_model}）"
+    else:
+        embeddings_state = "未建立（可选）"
+    print(f"  {info} 向量索引 {embeddings_state}")
+
+    print()
+    if hints:
+        print("下一步：")
+        for index, hint in enumerate(hints, start=1):
+            print(f"  {index}. {hint}")
+    else:
+        print("一切就绪。可以直接运行：")
+        print('  studybuddy ask "导数的定义是什么？"')
+        print("  studybuddy ui        # 打开网页界面")
+
+    print()
+    print(_style("提示：卡住时运行 studybuddy doctor 再看一次", DIM))
+    return 0
+
+
 def _cmd_stats(buddy: StudyBuddy, _args: argparse.Namespace) -> int:
     stats = buddy.library.stats()
     memory = buddy.memory.stats()
@@ -380,12 +448,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"初始化失败: {exc}", file=sys.stderr)
         return 1
 
+    # If the user did not pick a model on this invocation, reuse the one saved by
+    # the web UI so both entry points behave the same.
+    if (
+        "STUDYBUDDY_MODEL" not in os.environ
+        and "STUDYBUDDY_BASE_URL" not in os.environ
+        and args.model == parser.get_default("model")
+        and args.base_url is None
+    ):
+        from .config import apply_to
+
+        apply_to(buddy)
+
     handlers = {
         "add": _cmd_add,
         "books": _cmd_books,
         "add-text": _cmd_add_text,
         "quiz": _cmd_quiz,
         "review": _cmd_review,
+        "doctor": _cmd_doctor,
         "memory": _cmd_memory,
         "profile": _cmd_profile,
         "stats": _cmd_stats,

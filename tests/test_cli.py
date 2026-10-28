@@ -77,6 +77,23 @@ class TestCli(unittest.TestCase):
         self.assertIn(self.root, out)
         self.assertNotIn(other, out)
 
+    def test_doctor_reports_missing_steps(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            code, out, _ = run("--root", self.root, "doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("环境自检", out)
+        self.assertIn("书库 0 本", out)
+        self.assertIn("下一步", out)
+        self.assertIn("STUDYBUDDY_API_KEY", out)
+
+    def test_doctor_reports_ready_after_import(self) -> None:
+        run("--root", self.root, "add", str(self.pdf))
+        with patch.dict(os.environ, {"STUDYBUDDY_API_KEY": "sk-test"}, clear=True):
+            code, out, _ = run("--root", self.root, "doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("书库 1 本", out)
+        self.assertIn("studybuddy ui", out)
+
     def test_stats(self) -> None:
         run("--root", self.root, "add", str(self.pdf))
         code, out, _ = run("--root", self.root, "stats")

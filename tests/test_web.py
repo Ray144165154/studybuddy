@@ -69,6 +69,54 @@ class TestState(WebTestCase):
         self.assertEqual(len(data["facts"]), 1)
         self.assertEqual(len(data["topics"]), 1)
 
+    def test_suggestions_come_from_section_titles(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id="m1:p1:0",
+                book_id="m1",
+                book_title="概率论基础",
+                page=1,
+                section="3.1 条件概率",
+                text="条件概率的定义。",
+            ),
+            Chunk(
+                id="m1:p2:0",
+                book_id="m1",
+                book_title="概率论基础",
+                page=2,
+                section="7.2 大数定律",
+                text="大数定律。",
+            ),
+        ]
+        self.library.save()
+        _, data = self.app().dispatch("GET", "/api/state", None, {})
+        self.assertEqual(len(data["suggestions"]), 2)
+        self.assertIn("条件概率", data["suggestions"][0])
+
+    def test_suggestions_ignore_ocr_noise(self) -> None:
+        self.library.chunks = [
+            Chunk(id="m1:p1:0", book_id="m1", book_title="书", page=1, section="第1章 概率与测度", text="x"),
+            Chunk(
+                id="m1:p2:0", book_id="m1", book_title="书", page=2, section="第1章 概率与測度", text="x"
+            ),  # 近重复
+            Chunk(
+                id="m1:p3:0", book_id="m1", book_title="书", page=3, section="51.2 事件与集合", text="x"
+            ),  # OCR 把 1.2 认成 51.2
+            Chunk(id="m1:p4:0", book_id="m1", book_title="书", page=4, section="1.2.2 事件的运算", text="x"),
+        ]
+        self.library.save()
+        _, data = self.app().dispatch("GET", "/api/state", None, {})
+        self.assertEqual(
+            data["suggestions"],
+            ["第1章 概率与测度 讲了什么？", "1.2.2 事件的运算 讲了什么？"],
+        )
+
+    def test_no_suggestions_without_books(self) -> None:
+        self.library.chunks = []
+        self.library.save()
+        _, data = self.app().dispatch("GET", "/api/state", None, {})
+        self.assertEqual(data["suggestions"], [])
+
     def test_unknown_endpoint(self) -> None:
         status, data = self.app().dispatch("GET", "/api/nope", None, {})
         self.assertEqual(status, 404)

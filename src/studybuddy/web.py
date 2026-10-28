@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import difflib
 import json
+import re
 import sys
 import threading
 import traceback
@@ -31,6 +33,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
+from . import config as saved_config
 from .errors import AgentError, LLMError, StudyError
 from .study import StudyBuddy
 
@@ -75,6 +78,21 @@ def _origin_allowed(origin: str) -> bool:
     return parsed.scheme in ("http", "https") and _host_allowed(parsed.netloc)
 
 
+_CHAPTER = re.compile(r"^第\s*([0-9]+)\s*[章节]")
+_CN_CHAPTER = re.compile(r"^第\s*[一二三四五六七八九十百零〇]+\s*[章节]")
+_NUMBERED = re.compile(r"^(\d{1,2})(?:\.\d{1,2})*\s")
+
+
+def _plausible_heading(section: str) -> bool:
+    """Reject OCR garbage such as "51.2 事件与集合" (a misread 1.2)."""
+    if not 4 <= len(section) <= 30:
+        return False
+    match = _CHAPTER.match(section) or _NUMBERED.match(section)
+    if match:
+        return int(match.group(1)) <= 30
+    return bool(_CN_CHAPTER.match(section))
+
+
 def _int_param(value: Any, field: str, *, low: int, high: int) -> int:
     try:
         parsed = int(value)
@@ -95,43 +113,21 @@ class WebApp:
 
     @property
     def config_path(self) -> Path:
-        return Path(self.buddy.root) / _UI_CONFIG_FILE
+        return saved_config.path_for(self.buddy.root)
 
     def restore_config(self) -> None:
-        """Re-apply the model choice from the last run.
-
-        Only the model and endpoint are stored. The API key is deliberately never
-        written to disk, so it has to be supplied again after a restart.
-        """
-        path = self.config_path
-        if not path.is_file():
-            return
-        try:
-            data = json.loads(path.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        if not isinstance(data, dict):
-            return
-        model = data.get("model")
-        base_url = data.get("base_url")
-        if isinstance(model, str) and model.strip():
-            self.buddy.model = model.strip()
-            self.buddy.llm.model = self.buddy.model
-        if isinstance(base_url, str) and base_url.strip():
-            self.buddy.llm.base_url = base_url.strip().rstrip("/")
+        """Re-apply the model choice from the last run (the key is never stored)."""
+        saved_config.apply_to(self.buddy)
 
     def save_config(self) -> None:
         """Persist the model choice; a read-only data directory must not break the UI."""
-        payload = {
-            "model": self.buddy.model,
-            "base_url": getattr(self.buddy.llm, "base_url", ""),
-        }
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
-        except OSError as exc:  # read-only volume, sandbox, permissions...
+        if not saved_config.save(
+            self.buddy.root,
+            model=self.buddy.model,
+            base_url=getattr(self.buddy.llm, "base_url", ""),
+        ):
             print(
-                f"[web] 无法保存设置到 {self.config_path}（{exc}）。本次仍然生效，但重启后会丢失。",
+                f"[web] 无法保存设置到 {self.config_path}。本次仍然生效，但重启后会丢失。",
                 file=sys.stderr,
                 flush=True,
             )
@@ -169,9 +165,31 @@ class WebApp:
             "memory": self.buddy.memory.stats(),
             "profile": self.buddy.memory.profile.to_dict(),
             "has_embeddings": library.has_embeddings,
+            "suggestions": self.suggestions(),
             "web_ready": self.web_ready,
             "web_provider": self.web_provider,
         }
+
+    def suggestions(self) -> list[str]:
+        """Three questions derived from the book's own section titles.
+
+        OCR gives near-duplicates ("测度" vs "測度") and occasional impossible
+        chapter numbers ("51.2" for 1.2), so candidates are filtered by shape and
+        de-duplicated by string similarity.
+        """
+        picks: list[str] = []
+        for chunk in self.buddy.library.chunks:
+            if chunk.nav or not chunk.section:
+                continue
+            section = chunk.section.strip()
+            if not _plausible_heading(section):
+                continue
+            if any(difflib.SequenceMatcher(None, section, kept).ratio() > 0.85 for kept in picks):
+                continue
+            picks.append(section)
+            if len(picks) >= 3:
+                break
+        return [f"{section} 讲了什么？" for section in picks]
 
     def memory_payload(self) -> dict[str, Any]:
         memory = self.buddy.memory
