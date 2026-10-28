@@ -354,6 +354,57 @@ class TestMemoryActions(WebTestCase):
         self.assertEqual(data["items"], [])
 
 
+class TestStreamEndpoint(WebTestCase):
+    def test_sse_stream(self) -> None:
+        import threading as _threading
+        from http.server import ThreadingHTTPServer
+
+        from studybuddy.web import _Handler
+
+        class StreamLLM(ScriptedLLM):
+            def stream(self, messages, tools=None):  # type: ignore[no-untyped-def]
+                self.calls.append(list(messages))
+                yield "导数是"
+                yield "瞬时变化率 [1]"
+
+        buddy = StudyBuddy(
+            self.root,
+            model="test-model",
+            api_key="not-needed",
+            llm=StreamLLM(),
+            library=self.library,
+            memory=self.memory,
+        )
+        app = WebApp(buddy)
+        handler = type("Handler", (_Handler,), {"app": app})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        thread = _threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"{base}/api/ask/stream",
+                data=json.dumps({"question": "什么是导数？"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn("text/event-stream", response.headers.get("Content-Type", ""))
+                body = response.read().decode("utf-8")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        kinds = [event["type"] for event in events]
+        self.assertEqual(kinds[0], "sources")
+        self.assertEqual(kinds[-1], "done")
+        self.assertIn("delta", kinds)
+        self.assertEqual(events[-1]["text"], "导数是瞬时变化率 [1]")
+
+
 class TestHttpServer(WebTestCase):
     """One end-to-end check over a real socket."""
 

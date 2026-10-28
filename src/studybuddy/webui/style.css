@@ -92,6 +92,14 @@ aside {
 
 .bubble { padding: 12px 14px; border-radius: var(--radius); }
 .bubble.user { background: var(--accent-soft); margin-left: auto; width: fit-content; max-width: 70%; }
+.answer.streaming { white-space: pre-wrap; }
+.answer.streaming::after {
+  content: "▍";
+  color: var(--accent);
+  animation: caret 1s steps(1) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+
 .bubble.assistant { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
 
 .answer p { margin: 0 0 10px; }

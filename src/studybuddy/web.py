@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import difflib
 import json
 import re
@@ -283,6 +284,41 @@ class WebApp:
                 "total_tokens": answer.usage.total_tokens,
             },
         }
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        rewrite: bool = False,
+        semantic: bool = True,
+        web: bool = False,
+        remember: bool = True,
+    ) -> Any:
+        """Yield server-sent events, then schedule memory in the background."""
+        started = time.perf_counter()
+        final: dict[str, Any] | None = None
+        with self._lock:
+            for event in self.buddy.ask_stream(question, rewrite=rewrite, semantic=semantic, web=web):
+                if event.get("type") == "done":
+                    final = dict(event)
+                    final.setdefault("elapsed", round(time.perf_counter() - started, 2))
+                    yield final
+                    continue
+                yield event
+
+        if remember and self.background_memory and final is not None:
+            threading.Thread(
+                target=self._remember_text, args=(question, final.get("text", "")), daemon=True
+            ).start()
+
+    def _remember_text(self, question: str, text: str) -> None:
+        from .types import Answer
+
+        try:
+            with self._lock:
+                self.buddy.remember(question, Answer(text=text))
+        except Exception as exc:  # noqa: BLE001 - background work must not crash
+            print(f"[web] 后台记忆失败: {exc}", file=sys.stderr, flush=True)
 
     def _remember_later(self, question: str, answer: Any) -> None:
         """Extract and store memory after the answer has already been returned."""
@@ -556,45 +592,84 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_file(candidate)
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+    def _post_checks(self) -> bool:
+        """Shared guard for POST handlers. Returns False after replying."""
         if not self._host_ok():
             self._send_json(403, {"error": "host not allowed"})
-            return
+            return False
         if not self._origin_ok():
             self._send_json(403, {"error": "origin not allowed"})
-            return
-
-        # Requiring a JSON content type blocks cross-site "simple requests", which
-        # skip CORS preflight and could otherwise drive this API.
+            return False
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if content_type != "application/json":
             self._send_json(415, {"error": "Content-Type 必须是 application/json"})
-            return
+            return False
+        return True
 
+    def _read_json_body(self) -> dict[str, Any] | None:
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             self._send_json(411, {"error": "缺少 Content-Length"})
-            return
+            return None
         try:
             length = int(raw_length)
         except (TypeError, ValueError):
             self._send_json(400, {"error": "Content-Length 非法"})
-            return
+            return None
         if length < 0:
             self._send_json(400, {"error": "Content-Length 非法"})
-            return
+            return None
         if length > _MAX_BODY_BYTES:
             self._send_json(413, {"error": "请求体过大"})
-            return
-
+            return None
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw or b"{}")
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {"error": "请求体不是合法 JSON"})
-            return
+            return None
         if not isinstance(payload, dict):
             self._send_json(400, {"error": "请求体必须是 JSON 对象"})
+            return None
+        return payload
+
+    def _stream_answer(self, payload: dict[str, Any]) -> None:
+        """Server-sent events: sources first, then deltas, then done."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+
+        def emit(event: dict[str, Any]) -> None:
+            chunk = json.dumps(event, ensure_ascii=False).encode("utf-8")
+            self.wfile.write(b"data: " + chunk + b"\n\n")
+            self.wfile.flush()
+
+        try:
+            for event in self.app.ask_stream(
+                str(payload.get("question") or ""),
+                rewrite=bool(payload.get("rewrite")),
+                semantic=bool(payload.get("semantic", True)),
+                web=bool(payload.get("web")),
+            ):
+                emit(event)
+        except (BrokenPipeError, ConnectionResetError):
+            return  # the browser went away mid-stream
+        except Exception as exc:  # noqa: BLE001 - always tell the client something
+            with contextlib.suppress(OSError):
+                emit({"type": "error", "error": str(exc)})
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+        if not self._post_checks():
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        if urlparse(self.path).path == "/api/ask/stream":
+            self._stream_answer(payload)
             return
 
         status, response = self.app.dispatch("POST", urlparse(self.path).path, payload, {})

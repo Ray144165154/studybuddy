@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -361,6 +362,91 @@ class StudyBuddy:
             self.search_error = str(exc)
             return None
         return self.search_client
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        books: list[str] | None = None,
+        top_k: int = 6,
+        per_book_cap: int = 3,
+        semantic: bool = True,
+        rewrite: bool = False,
+        web: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Same pipeline as :meth:`ask`, yielding events so the UI can stream.
+
+        Events: ``sources`` once, then ``delta`` per token batch, then ``done``.
+        The final text is normalised exactly like the blocking path.
+        """
+        started = time.perf_counter()
+        question = (question or "").strip()
+        if not question:
+            raise StudyError("问题是空的")
+        if not self.library.chunks:
+            raise StudyError("书库是空的 -- 先用 `studybuddy add` 导入一本教材")
+
+        warnings: list[str] = []
+        web_sources = self._web_results(question, warnings) if web else []
+        selected = self.library.resolve_books(books)
+        hits, warning = self._retrieve(
+            question,
+            books=selected,
+            top_k=top_k,
+            per_book_cap=per_book_cap,
+            semantic=semantic,
+            rewrite=rewrite,
+        )
+        if warning:
+            warnings.append(warning)
+
+        sources = [
+            Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
+        ]
+        yield {
+            "type": "sources",
+            "sources": [
+                {
+                    "index": source.index,
+                    "book": source.chunk.book_title,
+                    "page": source.chunk.page,
+                    "section": source.chunk.section,
+                    "snippet": source.chunk.text[:160],
+                    "unreliable": source.chunk.unreliable,
+                }
+                for source in sources
+            ],
+            "web_sources": [
+                {"index": item.index, "title": item.title, "url": item.url} for item in web_sources
+            ],
+            "warnings": warnings,
+        }
+
+        messages = [
+            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="user", content=self._ask_prompt(question, sources, web_sources)),
+        ]
+
+        stream_method = getattr(self.llm, "stream", None)
+        collected: list[str] = []
+        if callable(stream_method):
+            for delta in stream_method(messages):
+                piece = normalize_math_text(delta)
+                collected.append(piece)
+                yield {"type": "delta", "text": piece}
+        else:  # injected clients may only implement complete()
+            response = self.llm.complete(messages)
+            piece = normalize_math_text(response.text or "")
+            collected.append(piece)
+            yield {"type": "delta", "text": piece}
+
+        text = "".join(collected).strip()
+        yield {
+            "type": "done",
+            "text": text,
+            "warnings": warnings,
+            "elapsed": round(time.perf_counter() - started, 2),
+        }
 
     def _ask_prompt(
         self,

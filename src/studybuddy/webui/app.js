@@ -332,6 +332,75 @@ function scrollDown() {
   messages.scrollTop = messages.scrollHeight;
 }
 
+async function streamAnswer(card, question) {
+  const payload = {
+    question,
+    rewrite: $("rewrite").checked,
+    semantic: $("semantic").checked,
+    web: $("web").checked && !$("web").disabled,
+  };
+  const response = await fetch("/api/ask/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`流式接口不可用（HTTP ${response.status}）`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const data = { sources: [], web_sources: [], warnings: [], text: "" };
+  const live = el("div", "answer streaming");
+  card.innerHTML = "";
+  card.append(live);
+
+  let buffer = "";
+  let painted = 0;
+  const paint = () => {
+    const now = Date.now();
+    if (now - painted > 110) {
+      live.textContent = data.text;
+      painted = now;
+      scrollDown();
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() || "";
+    for (const chunk of chunks) {
+      if (!chunk.startsWith("data:")) continue;
+      let event;
+      try {
+        event = JSON.parse(chunk.slice(5).trim());
+      } catch (error) {
+        continue;
+      }
+      if (event.type === "sources") {
+        data.sources = event.sources || [];
+        data.web_sources = event.web_sources || [];
+        data.warnings = event.warnings || [];
+      } else if (event.type === "delta") {
+        data.text += event.text || "";
+        paint();
+      } else if (event.type === "done") {
+        if (event.text) data.text = event.text;
+        data.elapsed = event.elapsed;
+        if (event.warnings) data.warnings = event.warnings;
+      } else if (event.type === "error") {
+        throw new Error(event.error);
+      }
+    }
+  }
+
+  live.textContent = data.text;
+  renderAnswer(card, data);
+}
+
 async function ask(question) {
   if (!STATE || !STATE.stats.books) {
     alert("先导入一本教材");
@@ -344,50 +413,29 @@ async function ask(question) {
 
   const send = $("send");
   send.disabled = true;
+  const started = Date.now();
   try {
-    const payload = {
-      question,
-      rewrite: $("rewrite").checked,
-      semantic: $("semantic").checked,
-      web: $("web").checked && !$("web").disabled,
-    };
-    const data = await api("/api/ask", payload);
-    renderAnswer(card, data);
+    await streamAnswer(card, question);
   } catch (error) {
-    card.innerHTML = "";
-    card.append(el("div", "warn", `出错: ${error.message}`));
+    // Fall back to the blocking endpoint (older server, proxy that buffers SSE).
+    try {
+      const data = await api("/api/ask", {
+        question,
+        rewrite: $("rewrite").checked,
+        semantic: $("semantic").checked,
+        web: $("web").checked && !$("web").disabled,
+      });
+      renderAnswer(card, data);
+    } catch (fallbackError) {
+      card.innerHTML = "";
+      card.append(el("div", "warn", `出错: ${fallbackError.message || error.message}`));
+    }
   } finally {
     send.disabled = false;
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+    const foot = card.querySelector(".foot");
+    if (foot && !foot.textContent.includes("秒")) foot.textContent += ` · 前端总耗时 ${elapsed} 秒`;
     scrollDown();
-  }
-}
-
-// Safari can swallow programmatic navigation from an injected anchor; when the
-// popup is blocked, fall back to copying the URL so the user can still get there.
-function openExternal(event, url) {
-  event.preventDefault();
-  let opened = null;
-  try {
-    opened = window.open(url, "_blank", "noopener,noreferrer");
-  } catch (error) {
-    opened = null;
-  }
-  if (!opened) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).catch(() => {});
-    }
-    alert("浏览器拦截了新窗口，链接已尝试复制到剪贴板：\n\n" + url);
-  }
-}
-
-function copyLink(url) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(url).then(
-      () => alert("链接已复制：\n" + url),
-      () => prompt("复制下面的链接：", url),
-    );
-  } else {
-    prompt("复制下面的链接：", url);
   }
 }
 

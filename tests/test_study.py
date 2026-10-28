@@ -403,6 +403,61 @@ class TestMemoryWriteFailure(StudyTestCase):
         self.assertTrue(any("记忆" in warning for warning in answer.warnings))
 
 
+class StreamingLLM(ScriptedLLM):
+    """Adds the optional stream() method the UI uses."""
+
+    def __init__(self, *deltas, **kwargs):
+        super().__init__(*kwargs.get("responses", []))
+        self.deltas = list(deltas)
+
+    def stream(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        self.calls.append(list(messages))
+        yield from self.deltas
+
+
+class TestAskStream(StudyTestCase):
+    def test_events_in_order(self) -> None:
+        llm = StreamingLLM("导数是", "瞬时变化率", "。[1]")
+        buddy = StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory)
+        events = list(buddy.ask_stream("什么是导数？"))
+        kinds = [event["type"] for event in events]
+        self.assertEqual(kinds[0], "sources")
+        self.assertEqual(kinds[-1], "done")
+        self.assertIn("delta", kinds)
+        text = "".join(e["text"] for e in events if e["type"] == "delta")
+        self.assertEqual(text, "导数是瞬时变化率。[1]")
+        self.assertEqual(events[-1]["text"], "导数是瞬时变化率。[1]")
+        self.assertIn("elapsed", events[-1])
+
+    def test_sources_carry_pages(self) -> None:
+        llm = StreamingLLM("答案")
+        buddy = StudyBuddy(self.root, llm=llm, library=self.library, memory=self.memory)
+        first = next(iter(buddy.ask_stream("导数")))
+        self.assertTrue(first["sources"])
+        self.assertIn("page", first["sources"][0])
+
+    def test_falls_back_when_client_has_no_stream(self) -> None:
+        class NoStream:
+            def complete(self, messages, tools=None):  # type: ignore[no-untyped-def]
+                return says("整段回答")
+
+            async def acomplete(self, messages, tools=None):  # type: ignore[no-untyped-def]
+                return self.complete(messages, tools)
+
+        buddy = StudyBuddy(self.root, llm=NoStream(), library=self.library, memory=self.memory)
+        events = list(buddy.ask_stream("导数"))
+        deltas = [e["text"] for e in events if e["type"] == "delta"]
+        self.assertEqual(deltas, ["整段回答"])
+
+    def test_empty_question_raises(self) -> None:
+        with self.assertRaises(StudyError):
+            list(
+                StudyBuddy(
+                    self.root, llm=StreamingLLM("x"), library=self.library, memory=self.memory
+                ).ask_stream(" ")
+            )
+
+
 class TestQuiz(StudyTestCase):
     def test_quiz_parses_questions(self) -> None:
         quiz = self.buddy(says(QUIZ_JSON)).quiz(topic="导数", count=2)
