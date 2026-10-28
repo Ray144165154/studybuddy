@@ -143,6 +143,15 @@ class WebApp:
         key = getattr(self.buddy.llm, "api_key", "")
         return bool(key) and key != "not-needed"
 
+    @property
+    def web_provider(self) -> str:
+        client = self.buddy.ensure_search()
+        return getattr(client, "name", "") if client is not None else ""
+
+    @property
+    def web_ready(self) -> bool:
+        return self.buddy.ensure_search() is not None
+
     def state(self) -> dict[str, Any]:
         library = self.buddy.library
         return {
@@ -160,6 +169,8 @@ class WebApp:
             "memory": self.buddy.memory.stats(),
             "profile": self.buddy.memory.profile.to_dict(),
             "has_embeddings": library.has_embeddings,
+            "web_ready": self.web_ready,
+            "web_provider": self.web_provider,
         }
 
     def memory_payload(self) -> dict[str, Any]:
@@ -178,7 +189,14 @@ class WebApp:
 
     # -- actions -------------------------------------------------------------------
 
-    def ask(self, question: str, *, rewrite: bool = False, semantic: bool = True) -> dict[str, Any]:
+    def ask(
+        self,
+        question: str,
+        *,
+        rewrite: bool = False,
+        semantic: bool = True,
+        web: bool = False,
+    ) -> dict[str, Any]:
         question = (question or "").strip()
         if not question:
             raise StudyErrorBadRequest("问题是空的")
@@ -188,7 +206,7 @@ class WebApp:
             raise StudyError("书库是空的 -- 先在「书库」里导入一本教材")
 
         with self._lock:
-            answer = self.buddy.ask(question, rewrite=rewrite, semantic=semantic)
+            answer = self.buddy.ask(question, rewrite=rewrite, semantic=semantic, web=web)
 
         return {
             "text": answer.text,
@@ -204,6 +222,9 @@ class WebApp:
                 for source in answer.sources
             ],
             "memories": answer.memories,
+            "web_sources": [
+                {"index": item.index, "title": item.title, "url": item.url} for item in answer.web_sources
+            ],
             "warnings": answer.warnings,
             "usage": {
                 "prompt_tokens": answer.usage.prompt_tokens,
@@ -370,6 +391,7 @@ class WebApp:
                     str(payload.get("question") or ""),
                     rewrite=bool(payload.get("rewrite")),
                     semantic=bool(payload.get("semantic", True)),
+                    web=bool(payload.get("web")),
                 )
             if method == "POST" and path == "/api/add-book":
                 return 200, self.add_book(payload)

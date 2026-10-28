@@ -144,6 +144,19 @@ aside {
 .sources ol { margin: 0; padding-left: 18px; font-size: 13px; }
 .sources li { margin-bottom: 4px; }
 .sources .where { color: var(--muted); }
+.badge-web {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-right: 6px;
+}
+
+.sources a { color: var(--accent); text-decoration: none; }
+.sources a:hover { text-decoration: underline; }
+
 .badge {
   font-size: 11px;
   color: var(--warn);

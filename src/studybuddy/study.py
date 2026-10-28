@@ -27,8 +27,9 @@ from .errors import StudyError
 from .llm import LLM
 from .local_embed import DEFAULT_LOCAL_MODEL, LocalEmbedder
 from .memory import Memory
+from .search import SearchError, WebSearch, build_search
 from .store import Library
-from .types import Answer, Book, Chunk, Message, Source
+from .types import Answer, Book, Chunk, Message, Source, WebSource
 
 __all__ = ["StudyBuddy", "QuizQuestion", "Quiz", "Comparison", "ReviewItem"]
 
@@ -69,7 +70,10 @@ SYSTEM_PROMPT = """你是一位严谨、耐心的大学学业辅导老师，正�
 3. 如果学生画像或记忆显示这是他的薄弱点，多给一步推导和一个具体例子。
 4. 中文作答，结论先行再给推导，避免空洞的鼓励和重复原话。
 5. 数学符号用普通字符书写（如 f^{-1}、R^n、sigma、sqrt），不要使用 𝒬、𝓕、ℝ 这类
-   装饰性 Unicode 数学字母——它们在很多字体里会显示成方框。"""
+   装饰性 Unicode 数学字母——它们在很多字体里会显示成方框。
+6. 如果提供了【网络搜索结果】：优先使用教材片段；教材没有覆盖时才引用网络内容，
+   引用时用 [W1]、[W2] 标注，并在句子里说明“这是网络资料”。网络内容与教材冲突时，
+   明确说明两者不一致，不要默默选一个。"""
 
 QUIZ_SYSTEM = """你是一位大学课程的命题老师。你只输出 JSON，不输出任何解释文字。"""
 
@@ -196,6 +200,8 @@ class StudyBuddy:
         embedding_base_url: str | None = None,
         embedding_provider: str | None = None,
         embedder: Any = None,
+        search_client: WebSearch | None = None,
+        search_provider: str | None = None,
         rrf_k: int = DEFAULT_RRF_K,
     ) -> None:
         self.root = Path(root)
@@ -210,6 +216,10 @@ class StudyBuddy:
         self.embedding_model = embedding_model or os.environ.get("STUDYBUDDY_EMBED_MODEL") or None
         self.embedding_base_url = embedding_base_url or os.environ.get("STUDYBUDDY_EMBED_BASE_URL") or None
         self.embedding_provider = embedding_provider or os.environ.get("STUDYBUDDY_EMBED_PROVIDER") or None
+        self.search_client = search_client
+        self.search_provider = search_provider or os.environ.get("STUDYBUDDY_SEARCH_PROVIDER") or None
+        self.search_error: str | None = None
+        self._search_checked = False
         self.embedder: Any = embedder
         self.rrf_k = rrf_k
         self.embedding_error: str | None = None
@@ -272,6 +282,7 @@ class StudyBuddy:
         per_book_cap: int = 3,
         semantic: bool = True,
         rewrite: bool = False,
+        web: bool = False,
     ) -> Answer:
         """Answer a question using the student's textbooks, with page citations."""
         question = question.strip()
@@ -279,6 +290,9 @@ class StudyBuddy:
             raise StudyError("问题是空的")
         if not self.library.chunks:
             raise StudyError("书库是空的 -- 先用 `studybuddy add` 导入一本教材")
+
+        warnings: list[str] = []
+        web_sources = self._web_results(question, warnings) if web else []
 
         selected = self.library.resolve_books(books)
         hits, warning = self._retrieve(
@@ -293,9 +307,12 @@ class StudyBuddy:
             Source(index=index + 1, chunk=chunk, score=score) for index, (chunk, score) in enumerate(hits)
         ]
 
+        if warning:
+            warnings.append(warning)
+
         messages = [
             Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=self._ask_prompt(question, sources)),
+            Message(role="user", content=self._ask_prompt(question, sources, web_sources)),
         ]
         response = self.llm.complete(messages)
 
@@ -303,7 +320,8 @@ class StudyBuddy:
             text=normalize_math_text((response.text or "").strip()),
             sources=sources,
             memories=[hit.text for hit in self.memory.recall(question, limit=4)],
-            warnings=[warning] if warning else [],
+            web_sources=web_sources,
+            warnings=warnings,
             usage=response.usage,
             model=response.model or self.model,
         )
@@ -315,7 +333,41 @@ class StudyBuddy:
             self.remember(question, answer)
         return answer
 
-    def _ask_prompt(self, question: str, sources: list[Source]) -> str:
+    def _web_results(self, question: str, warnings: list[str]) -> list[WebSource]:
+        """Search the web, degrading to a warning when the provider fails."""
+        client = self.ensure_search()
+        if client is None:
+            warnings.append(self.search_error or "未配置联网搜索服务")
+            return []
+        try:
+            results = client.search(question, limit=5)
+        except Exception as exc:  # noqa: BLE001 - search must never block an answer
+            warnings.append(f"联网搜索失败：{exc}")
+            return []
+        return [
+            WebSource(index=index, title=item.title, url=item.url, snippet=item.snippet)
+            for index, item in enumerate(results, start=1)
+        ]
+
+    def ensure_search(self) -> WebSearch | None:
+        if self.search_client is not None:
+            return self.search_client
+        if self._search_checked:
+            return None
+        self._search_checked = True
+        try:
+            self.search_client = build_search(self.search_provider)
+        except SearchError as exc:
+            self.search_error = str(exc)
+            return None
+        return self.search_client
+
+    def _ask_prompt(
+        self,
+        question: str,
+        sources: list[Source],
+        web_sources: list[WebSource] | None = None,
+    ) -> str:
         blocks: list[str] = []
 
         memory_block = self.memory.context_block(question)
@@ -342,6 +394,14 @@ class StudyBuddy:
                     "请说明不确定并要求读者核对原书。）"
                 )
             blocks.append("")
+
+        if web_sources:
+            blocks.append("【网络搜索结果】（仅当教材没有答案时使用，引用用 [W编号]）")
+            for item in web_sources:
+                blocks.append(f"[W{item.index}] {item.title} — {item.url}")
+                if item.snippet:
+                    blocks.append(item.snippet[:300])
+                blocks.append("")
 
         blocks.append("【问题】")
         blocks.append(question)

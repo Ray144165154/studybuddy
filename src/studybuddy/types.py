@@ -228,22 +228,43 @@ class Source:
 
 
 @dataclass(slots=True)
+class WebSource:
+    """A web result shown to the model, numbered ``W1``.. so it reads differently
+    from a textbook citation."""
+
+    index: int
+    title: str
+    url: str
+    snippet: str = ""
+
+    @property
+    def citation(self) -> str:
+        return f"[W{self.index}] {self.title} — {self.url}"
+
+
+@dataclass(slots=True)
 class Answer:
     """The result of a question about the student's textbooks."""
 
     text: str
     sources: list[Source] = field(default_factory=list)
     memories: list[str] = field(default_factory=list)
+    web_sources: list[WebSource] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     model: str = ""
 
     def with_citations(self) -> str:
         """Answer text followed by a numbered source list."""
-        if not self.sources:
+        if not self.sources and not self.web_sources:
             return self.text
-        lines = [self.text, "", "来源:"]
-        lines.extend(f"  [{source.index}] {source.citation}" for source in self.sources)
+        lines = [self.text]
+        if self.sources:
+            lines.extend(["", "教材来源:"])
+            lines.extend(f"  [{source.index}] {source.citation}" for source in self.sources)
+        if self.web_sources:
+            lines.extend(["", "网络来源:"])
+            lines.extend(f"  [W{source.index}] {source.title} — {source.url}" for source in self.web_sources)
         return "\n".join(lines)
 
 

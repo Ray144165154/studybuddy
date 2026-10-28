@@ -114,6 +114,7 @@ make demo
 | `studybuddy ask "问题"` | 跨所有教材检索并回答，带页码引用 |
 | `studybuddy ask "问题" --book 高等数学` | 限定在某本教材里问 |
 | `studybuddy ask "问题" --rewrite` | 先让模型改写检索式（多一次小调用，难问题更准） |
+| `studybuddy ask "问题" --web` | 教材没有答案时联网搜索，引用标为 `[W1]` |
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
 | `studybuddy ui` | 打开本地网页界面（浏览器里提问、导入、看记忆） |
@@ -166,6 +167,36 @@ $env:STUDYBUDDY_ROOT = "$HOME\Documents\studybuddy-data\library"
 export STUDYBUDDY_ROOT="$HOME/Documents/studybuddy-data/library"
 ```
 
+## 联网搜索（可选）
+
+教材里没有的内容（最新定义、其他教材的讲法、新闻）可以让它上网查：
+
+```bash
+studybuddy ask "中心极限定理最近有什么新教材讲法" --web
+```
+
+网页界面里勾选「联网搜索」即可，不需要重启。
+
+**来源怎么区分**：教材片段是 `[1][2]`，网络结果是 `[W1][W2]`，回答里会说明「这是网络资料」。
+提示词要求模型优先用教材；教材与网络冲突时要明确指出来，而不是默默选一个。
+
+### 搜索服务
+
+| 服务 | 需要 key | 说明 |
+| --- | --- | --- |
+| **DuckDuckGo** | 不需要 | 默认。抓 HTML 页面，无需注册；部分网络环境可能被限速或拦截 |
+| **Tavily** | `STUDYBUDDY_TAVILY_API_KEY` | 专为 AI 检索设计，有免费额度，最稳 |
+| **Serper** | `STUDYBUDDY_SERPER_API_KEY` | Google 结果，有免费额度 |
+
+```bash
+export STUDYBUDDY_SEARCH_PROVIDER=tavily      # 不设则自动：有 key 用 key，否则 DuckDuckGo
+export STUDYBUDDY_TAVILY_API_KEY=tvly-...
+```
+
+设 `STUDYBUDDY_SEARCH_PROVIDER=none` 可彻底关闭联网。
+
+**隐私**：开启联网时，你的问题会被发送给搜索服务商；教材内容不会发送。
+
 ## 网页界面
 
 ```bash
@@ -176,6 +207,7 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 
 - **提问**：回答正文 + 可点击的 `[1]` 引用角标，来源列表带书名/页码/小节；公式 OCR 失真的
   片段会标「公式可能失真」
+- **联网搜索**：底部勾选「联网搜索」，网络来源以 `[W1]` 列出并可点击跳转（未配置时置灰）
 - **公式能看**：模型返回的 LaTeX（`$\sigma$`、`$\mathbb{R}$`、`$X_n$`、`$\frac{a}{b}$`）
   会在本地转成可读数学符号（σ、ℝ、Xₙ、a/b），不依赖外部 CDN
 - **书库**：导入 PDF（拖拽或选择文件）、按书一键「出题」「提纲」
@@ -374,7 +406,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 350 个测试
+make check       # ruff + mypy --strict + 364 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -442,6 +474,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-350 offline tests, MIT licensed.
+364 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

@@ -202,6 +202,12 @@ async function refresh() {
   STATE = await api("/api/state");
   renderStatus();
   renderBooks();
+  const webBox = $("web");
+  if (!STATE.web_ready) {
+    webBox.disabled = true;
+    webBox.checked = false;
+    $("web-wrap").title = "未配置搜索服务（默认使用 DuckDuckGo；也可设 Tavily/Serper 的 key）";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +255,7 @@ async function ask(question) {
       question,
       rewrite: $("rewrite").checked,
       semantic: $("semantic").checked,
+      web: $("web").checked && !$("web").disabled,
     };
     const data = await api("/api/ask", payload);
     renderAnswer(card, data);
@@ -275,6 +282,24 @@ function renderAnswer(card, data) {
     const remember = el("div", "remember");
     remember.innerHTML = "<b>我记得：</b>" + escapeHtml(data.memories.slice(0, 3).join("；"));
     card.append(remember);
+  }
+
+  if (data.web_sources && data.web_sources.length) {
+    const web = el("div", "sources");
+    web.append(el("div", "label", "网络来源（非教材内容）"));
+    const list = el("ol");
+    for (const item of data.web_sources) {
+      const li = el("li");
+      const link = document.createElement("a");
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = item.title || item.url;
+      li.append(el("span", "badge-web", "W" + item.index), link);
+      list.append(li);
+    }
+    web.append(list);
+    card.append(web);
   }
 
   if (data.sources && data.sources.length) {

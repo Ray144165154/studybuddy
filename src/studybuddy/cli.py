@@ -116,6 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--no-memory", action="store_true", help="不读取也不写入记忆")
     ask.add_argument("--no-semantic", action="store_true", help="只用词法检索，不做向量混合")
     ask.add_argument("--rewrite", action="store_true", help="先让模型改写检索式（多一次小调用，难问题更准）")
+    ask.add_argument("--web", action="store_true", help="教材没有答案时联网搜索（引用标为 [W1]）")
     ask.add_argument("--quiet", action="store_true", help="只输出答案正文")
 
     quiz = sub.add_parser("quiz", help="生成自测题")
@@ -407,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
                 remember=not args.no_memory,
                 semantic=not args.no_semantic,
                 rewrite=args.rewrite,
+                web=args.web,
             )
             _print_answer(answer, quiet=args.quiet)
             return 0
