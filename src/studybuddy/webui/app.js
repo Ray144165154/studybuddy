@@ -486,8 +486,13 @@ function renderAnswer(card, data) {
     });
   }
 
-  if (data.usage) {
-    card.append(el("div", "foot", `${data.usage.total_tokens} tokens`));
+  if (data.usage || data.elapsed) {
+    const parts = [];
+    if (data.elapsed) parts.push(`${data.elapsed} 秒`);
+    if (data.usage) parts.push(`${data.usage.total_tokens} tokens`);
+    if (data.sources) parts.push(`${data.sources.length} 个教材片段`);
+    if (data.web_sources && data.web_sources.length) parts.push(`${data.web_sources.length} 条网络来源`);
+    card.append(el("div", "foot", parts.join(" · ")));
   }
 }
 

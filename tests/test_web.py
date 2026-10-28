@@ -185,6 +185,35 @@ class TestAsk(WebTestCase):
         self.assertNotIn("/secret/path", data["error"])
 
 
+class TestBackgroundMemory(WebTestCase):
+    def test_answer_returns_before_memory_is_written(self) -> None:
+        app = WebApp(
+            StudyBuddy(
+                self.root,
+                model="test-model",
+                api_key="not-needed",
+                llm=ScriptedLLM(says("答 [1]"), says(MEMORY_JSON)),
+                library=self.library,
+                memory=self.memory,
+            ),
+            background_memory=True,
+        )
+        called = threading.Event()
+        app.buddy.remember = lambda *args, **kwargs: called.set()  # type: ignore[method-assign]
+
+        status, data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
+
+        self.assertEqual(status, 200)
+        self.assertIn("elapsed", data)
+        self.assertTrue(called.wait(2), "memory should be written in the background")
+
+    def test_synchronous_by_default(self) -> None:
+        app = self.app(says("答 [1]"), says(MEMORY_JSON))
+        status, data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
+        self.assertEqual(status, 200)
+        self.assertIn("elapsed", data)
+
+
 class TestBooksAndUpload(WebTestCase):
     def test_add_text(self) -> None:
         status, data = self.app().dispatch(

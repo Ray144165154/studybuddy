@@ -26,6 +26,7 @@ import json
 import re
 import sys
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,9 +105,12 @@ def _int_param(value: Any, field: str, *, low: int, high: int) -> int:
 class WebApp:
     """The API surface the single page app talks to."""
 
-    def __init__(self, buddy: StudyBuddy) -> None:
+    def __init__(self, buddy: StudyBuddy, *, background_memory: bool = False) -> None:
         self.buddy = buddy
         self._lock = threading.Lock()
+        # In the UI, remembering the exchange should not delay the answer. Tests
+        # keep it synchronous so scripted model calls stay deterministic.
+        self.background_memory = background_memory
         self.restore_config()
 
     # -- persisted (non-secret) settings -------------------------------------------
@@ -225,7 +229,9 @@ class WebApp:
         rewrite: bool = False,
         semantic: bool = True,
         web: bool = False,
+        remember: bool = True,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
         question = (question or "").strip()
         if not question:
             raise StudyErrorBadRequest("问题是空的")
@@ -240,8 +246,17 @@ class WebApp:
         if isinstance(self.buddy.llm, LLM) and not self.llm_ready:
             raise StudyErrorBadRequest("还没有配置模型：点右上角「设置」粘贴 API Key 后再提问")
 
+        deferred = remember and self.background_memory
         with self._lock:
-            answer = self.buddy.ask(question, rewrite=rewrite, semantic=semantic, web=web)
+            answer = self.buddy.ask(
+                question,
+                rewrite=rewrite,
+                semantic=semantic,
+                web=web,
+                remember=remember and not deferred,
+            )
+        if deferred:
+            threading.Thread(target=self._remember_later, args=(question, answer), daemon=True).start()
 
         return {
             "text": answer.text,
@@ -261,12 +276,21 @@ class WebApp:
                 {"index": item.index, "title": item.title, "url": item.url} for item in answer.web_sources
             ],
             "warnings": answer.warnings,
+            "elapsed": round(time.perf_counter() - started, 2),
             "usage": {
                 "prompt_tokens": answer.usage.prompt_tokens,
                 "completion_tokens": answer.usage.completion_tokens,
                 "total_tokens": answer.usage.total_tokens,
             },
         }
+
+    def _remember_later(self, question: str, answer: Any) -> None:
+        """Extract and store memory after the answer has already been returned."""
+        try:
+            with self._lock:
+                self.buddy.remember(question, answer)
+        except Exception as exc:  # noqa: BLE001 - background work must not crash
+            print(f"[web] 后台记忆失败: {exc}", file=sys.stderr, flush=True)
 
     def add_book(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_name = str(payload.get("name") or "教材.pdf")
@@ -593,7 +617,7 @@ def serve(
     open_browser: bool = True,
 ) -> None:
     """Run the UI until interrupted."""
-    app = WebApp(buddy)
+    app = WebApp(buddy, background_memory=True)
     handler = type("Handler", (_Handler,), {"app": app})
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{server.server_address[1]}"
