@@ -362,6 +362,35 @@ async function ask(question) {
   }
 }
 
+// Safari can swallow programmatic navigation from an injected anchor; when the
+// popup is blocked, fall back to copying the URL so the user can still get there.
+function openExternal(event, url) {
+  event.preventDefault();
+  let opened = null;
+  try {
+    opened = window.open(url, "_blank", "noopener,noreferrer");
+  } catch (error) {
+    opened = null;
+  }
+  if (!opened) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    alert("浏览器拦截了新窗口，链接已尝试复制到剪贴板：\n\n" + url);
+  }
+}
+
+function copyLink(url) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(
+      () => alert("链接已复制：\n" + url),
+      () => prompt("复制下面的链接：", url),
+    );
+  } else {
+    prompt("复制下面的链接：", url);
+  }
+}
+
 function domainOf(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -382,10 +411,17 @@ function renderAnswer(card, data) {
       const item = webByIndex.get(Number(number));
       if (!item) return match;
       const url = escapeHtml(item.url);
-      return `<a class="cite cite-web" href="${url}" target="_blank" rel="noopener noreferrer" title="${url}">W${number}</a>`;
+      return (
+        `<a class="cite cite-web" data-web="${number}" href="${url}" ` +
+        `target="_blank" rel="noopener noreferrer" title="${url}">W${number}</a>`
+      );
     },
   );
   body.innerHTML = html;
+  body.querySelectorAll(".cite-web").forEach((node) => {
+    const item = webByIndex.get(Number(node.dataset.web));
+    if (item) node.addEventListener("click", (event) => openExternal(event, item.url));
+  });
   card.append(body);
 
   if (data.warnings && data.warnings.length) {
@@ -413,6 +449,11 @@ function renderAnswer(card, data) {
       li.append(el("span", "badge-web", "W" + item.index), link);
       const domain = domainOf(item.url);
       if (domain) li.append(el("span", "where", "  " + domain));
+      const copy = el("button", "btn tiny copy-link", "复制");
+      copy.title = item.url;
+      copy.onclick = () => copyLink(item.url);
+      li.append(copy);
+      li.append(el("div", "url-line", item.url));
       list.append(li);
     }
     web.append(list);

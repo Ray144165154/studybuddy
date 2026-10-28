@@ -221,6 +221,13 @@ aside {
   margin-right: 6px;
 }
 
+.sources .copy-link { margin-left: 6px; padding: 0 6px; font-size: 11px; color: var(--muted); }
+.sources .url-line {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+  margin-top: 2px;
+}
 .sources a { color: var(--accent); text-decoration: none; }
 .sources a:hover { text-decoration: underline; }
 
