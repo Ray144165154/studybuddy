@@ -33,7 +33,7 @@ from .types import Answer, Book, Chunk, Message, Source, WebSource
 
 __all__ = ["StudyBuddy", "QuizQuestion", "Quiz", "Comparison", "ReviewItem"]
 
-_CITATION = re.compile(r"\[(\d{1,2})\]")
+_CITATION = re.compile(r"\[(W?)(\d+)\]")
 # "条件概率和事件的独立性" asks about two things; BM25 would otherwise reward the
 # document that matches whichever half has more words, and drop the other half.
 _COMPOUND = re.compile(r"\s*(?:以及|和|与|、)\s*")
@@ -279,12 +279,18 @@ class StudyBuddy:
         books: list[str] | None = None,
         top_k: int = 6,
         remember: bool = True,
+        persist_memory: bool = True,
         per_book_cap: int = 3,
         semantic: bool = True,
         rewrite: bool = False,
         web: bool = False,
     ) -> Answer:
-        """Answer a question using the student's textbooks, with page citations."""
+        """Answer with citations checked against retrieved source numbers.
+
+        ``remember=False`` disables memory reads and writes. ``persist_memory=False``
+        keeps personalized context but lets the web layer schedule memory writes.
+        Number validation does not establish that a claim follows from its source.
+        """
         question = question.strip()
         if not question:
             raise StudyError("问题是空的")
@@ -312,24 +318,47 @@ class StudyBuddy:
 
         messages = [
             Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=self._ask_prompt(question, sources, web_sources)),
+            Message(
+                role="user", content=self._ask_prompt(question, sources, web_sources, include_memory=remember)
+            ),
         ]
         response = self.llm.complete(messages)
 
         answer = Answer(
             text=normalize_math_text((response.text or "").strip()),
             sources=sources,
-            memories=[hit.text for hit in self.memory.recall(question, limit=4)],
+            memories=[hit.text for hit in self.memory.recall(question, limit=4)] if remember else [],
             web_sources=web_sources,
             warnings=warnings,
             usage=response.usage,
             model=response.model or self.model,
         )
 
+        valid_citations = {str(source.index) for source in sources}
+        valid_citations.update(f"W{source.index}" for source in web_sources)
+        invalid: set[str] = set()
+        cited: set[str] = set()
+
+        def check_citation(match: re.Match[str]) -> str:
+            label = match.group(1) + match.group(2)
+            if label not in valid_citations:
+                invalid.add(label)
+                return "【无效引用】"
+            cited.add(label)
+            return match.group(0)
+
+        answer.text = _CITATION.sub(check_citation, answer.text)
+        if invalid:
+            answer.warnings.append("已移除不存在的来源编号：" + "、".join(sorted(invalid)))
+        if valid_citations and not cited:
+            answer.warnings.append("回答未包含有效来源引用，请核对教材原文")
+        if not valid_citations:
+            answer.warnings.append("未检索到可核对的来源，请勿将本回答视为教材结论")
+
         self.session.append(Message(role="user", content=question))
         self.session.append(Message(role="assistant", content=answer.text))
 
-        if remember:
+        if remember and persist_memory:
             self.remember(question, answer)
         return answer
 
@@ -367,10 +396,12 @@ class StudyBuddy:
         question: str,
         sources: list[Source],
         web_sources: list[WebSource] | None = None,
+        *,
+        include_memory: bool = True,
     ) -> str:
         blocks: list[str] = []
 
-        memory_block = self.memory.context_block(question)
+        memory_block = self.memory.context_block(question) if include_memory else ""
         blocks.append("【学生情况】")
         blocks.append(memory_block or "（还没有画像和记忆）")
         blocks.append("")
@@ -471,7 +502,18 @@ class StudyBuddy:
         """Persist the episode and extract durable facts about the student."""
         books = list(dict.fromkeys(source.chunk.book_title for source in answer.sources))[:3]
         topics, facts, summary = self._extract_memory(question, answer.text, books)
+        self._record_memory(question, answer, books, topics, facts, summary)
 
+    def _record_memory(
+        self,
+        question: str,
+        answer: Answer,
+        books: list[str],
+        topics: list[str],
+        facts: list[dict[str, str]],
+        summary: str,
+    ) -> None:
+        """Apply extracted memory separately so web workers only lock the write."""
         try:
             self.memory.record_episode(
                 question,

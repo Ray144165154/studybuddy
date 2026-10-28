@@ -22,12 +22,15 @@ from __future__ import annotations
 import base64
 import binascii
 import difflib
+import ipaddress
 import json
 import re
 import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -43,8 +46,9 @@ __all__ = ["WebApp", "serve"]
 _STATIC_DIR = (Path(__file__).parent / "webui").resolve()
 _MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 _MAX_BODY_BYTES = 2 * 1024 * 1024
+_MAX_UPLOAD_BODY_BYTES = 4 * ((_MAX_UPLOAD_BYTES + 2) // 3) + 64 * 1024
 _MAX_QUESTION_CHARS = 8000
-_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+_LOOPBACK_NAMES = {"localhost"}
 _UI_CONFIG_FILE = "ui-config.json"
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -69,7 +73,10 @@ def _host_allowed(value: str | None) -> bool:
         host = host.rsplit(":", 1)[0]
     if host in _LOOPBACK_NAMES:
         return True
-    return host.startswith("127.")
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _origin_allowed(origin: str) -> bool:
@@ -103,14 +110,18 @@ def _int_param(value: Any, field: str, *, low: int, high: int) -> int:
 
 
 class WebApp:
-    """The API surface the single page app talks to."""
+    """The API surface the single page app talks to.
+
+    ``serve`` enables background memory; direct callers retain synchronous writes
+    by default. Call ``close`` to drain background tasks before disposing the app.
+    """
 
     def __init__(self, buddy: StudyBuddy, *, background_memory: bool = False) -> None:
         self.buddy = buddy
-        self._lock = threading.Lock()
-        # In the UI, remembering the exchange should not delay the answer. Tests
-        # keep it synchronous so scripted model calls stay deterministic.
-        self.background_memory = background_memory
+        self._lock = threading.RLock()
+        self._memory_executor = ThreadPoolExecutor(max_workers=1) if background_memory else None
+        self._memory_slots = threading.BoundedSemaphore(8)
+        self._memory_generation = 0
         self.restore_config()
 
     # -- persisted (non-secret) settings -------------------------------------------
@@ -246,17 +257,36 @@ class WebApp:
         if isinstance(self.buddy.llm, LLM) and not self.llm_ready:
             raise StudyErrorBadRequest("还没有配置模型：点右上角「设置」粘贴 API Key 后再提问")
 
-        deferred = remember and self.background_memory
         with self._lock:
             answer = self.buddy.ask(
                 question,
                 rewrite=rewrite,
                 semantic=semantic,
                 web=web,
-                remember=remember and not deferred,
+                remember=remember,
+                persist_memory=self._memory_executor is None,
             )
-        if deferred:
-            threading.Thread(target=self._remember_later, args=(question, answer), daemon=True).start()
+            if remember and self._memory_executor is not None:
+                if self._memory_slots.acquire(blocking=False):
+                    snapshot = copy(self.buddy)
+                    snapshot.llm = copy(self.buddy.llm)
+                    generation = self._memory_generation
+
+                    def update_memory() -> None:
+                        try:
+                            books = list(dict.fromkeys(s.chunk.book_title for s in answer.sources))[:3]
+                            topics, facts, summary = snapshot._extract_memory(question, answer.text, books)
+                            with self._lock:
+                                if generation == self._memory_generation:
+                                    snapshot._record_memory(question, answer, books, topics, facts, summary)
+                        except Exception:
+                            print("[web] 后台记忆提取失败", file=sys.stderr, flush=True)
+                        finally:
+                            self._memory_slots.release()
+
+                    self._memory_executor.submit(update_memory)
+                else:
+                    answer.warnings.append("记忆任务繁忙，本次未保存学习记忆")
 
         return {
             "text": answer.text,
@@ -283,14 +313,6 @@ class WebApp:
                 "total_tokens": answer.usage.total_tokens,
             },
         }
-
-    def _remember_later(self, question: str, answer: Any) -> None:
-        """Extract and store memory after the answer has already been returned."""
-        try:
-            with self._lock:
-                self.buddy.remember(question, answer)
-        except Exception as exc:  # noqa: BLE001 - background work must not crash
-            print(f"[web] 后台记忆失败: {exc}", file=sys.stderr, flush=True)
 
     def add_book(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_name = str(payload.get("name") or "教材.pdf")
@@ -367,12 +389,19 @@ class WebApp:
         self.save_config()
         return {"ok": True, "llm_ready": self.llm_ready, "model": self.buddy.model}
 
+    def close(self) -> None:
+        """Finish queued memory work before closing the application."""
+        if self._memory_executor is not None:
+            self._memory_executor.shutdown(wait=True)
+
     def clear_memory(self) -> dict[str, Any]:
-        memory = self.buddy.memory
-        memory.facts.clear()
-        memory.episodes.clear()
-        memory.topics.clear()
-        memory.save()
+        with self._lock:
+            self._memory_generation += 1
+            memory = self.buddy.memory
+            memory.facts.clear()
+            memory.episodes.clear()
+            memory.topics.clear()
+            memory.save()
         return {"ok": True}
 
     def update_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -443,6 +472,16 @@ class WebApp:
         payload: dict[str, Any] | None,
         query: dict[str, list[str]],
     ) -> tuple[int, dict[str, Any]]:
+        with self._lock:
+            return self._dispatch(method, path, payload, query)
+
+    def _dispatch(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None,
+        query: dict[str, list[str]],
+    ) -> tuple[int, dict[str, Any]]:
         payload = payload or {}
         try:
             if method == "GET" and path == "/api/state":
@@ -457,6 +496,7 @@ class WebApp:
                     rewrite=bool(payload.get("rewrite")),
                     semantic=bool(payload.get("semantic", True)),
                     web=bool(payload.get("web")),
+                    remember=bool(payload.get("remember", True)),
                 )
             if method == "POST" and path == "/api/add-book":
                 return 200, self.add_book(payload)
@@ -583,7 +623,8 @@ class _Handler(BaseHTTPRequestHandler):
         if length < 0:
             self._send_json(400, {"error": "Content-Length 非法"})
             return
-        if length > _MAX_BODY_BYTES:
+        limit = _MAX_UPLOAD_BODY_BYTES if urlparse(self.path).path == "/api/add-book" else _MAX_BODY_BYTES
+        if length > limit:
             self._send_json(413, {"error": "请求体过大"})
             return
 
@@ -645,3 +686,4 @@ def serve(
         print("\n再见")
     finally:
         server.server_close()
+        app.close()

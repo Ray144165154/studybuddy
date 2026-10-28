@@ -199,7 +199,8 @@ class TestBackgroundMemory(WebTestCase):
             background_memory=True,
         )
         called = threading.Event()
-        app.buddy.remember = lambda *_a, **_k: called.set()  # type: ignore[method-assign]
+        self.addCleanup(app.close)
+        app.buddy._record_memory = lambda *_a, **_k: called.set()  # type: ignore[method-assign]
 
         status, data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
 

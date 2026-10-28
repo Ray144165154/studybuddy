@@ -36,7 +36,7 @@ studybuddy doctor
 
 `studybuddy` 想把三件事一次做对：
 
-1. **答案必须有出处** —— 每个结论后面跟 `[1]`，末尾列出《书名》第几页第几节，你能直接翻书核对。
+1. **答案必须有出处** —— 提示模型为结论附上 `[1]`，末尾列出《书名》第几页第几节，你能直接翻书核对。
 2. **要能跨教材** —— 「拉格朗日中值定理和柯西中值定理的关系」可能同时需要高数书和数分书。
 3. **要记得住你** —— 你薄弱的知识点、偏好的讲解方式、上次问过什么，跨会话保留，并按遗忘曲线安排复习。
 
@@ -245,8 +245,8 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 | 静态文件路径穿越（`GET /../../etc/passwd`） | 解析后校验必须位于 `webui/` 内，否则 404 |
 | 上传文件名穿越（`name: "../x.pdf"` 或绝对路径） | 只接受纯文件名，含 `/`、`\`、`..` 直接 400 |
 | 跨站请求伪造（CSRF） | POST 必须是 `application/json` + loopback `Origin`；`text/plain` 一律 415 |
-| DNS rebinding | 校验 `Host` 必须是 loopback，否则 403 |
-| 请求体耗尽内存 | 上限 2MB（超大返回 413），连接超时 20 秒 |
+| DNS rebinding | 校验 `Host` 必须是 localhost 或真实回环 IP，拒绝以 `127.` 开头的外部域名，否则 403 |
+| 请求体耗尽内存 | 普通 JSON 上限 2MB；PDF 上传单独允许 80MB 原文件及 Base64 开销，超大返回 413；连接超时 20 秒 |
 | 错误信息泄露内部路径 | 500 只返回通用文案，细节留在终端日志 |
 | API Key | 只存在进程内存，不写盘、不回显 |
 
@@ -385,6 +385,12 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 | [`study.py`](src/studybuddy/study.py) | 编排：检索 → 带引用回答 → 记忆抽取 |
 | [`cli.py`](src/studybuddy/cli.py) | 命令行 |
 
+### 引用校验的边界
+
+回答返回前会核对教材 `[编号]` 和网络 `[W编号]` 是否存在于本次检索来源中；
+不存在的编号会替换为「无效引用」并显示警告。缺少有效引用、没有检索到来源时也会提示。
+这只能核对来源编号，不能证明某个结论被原文支持，仍需翻到对应页核对。
+
 ## 记忆是怎么设计的
 
 记忆不是「把对话存进向量库」这种黑盒，而是四类可读、可删除的结构：
@@ -399,7 +405,10 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 几个刻意的设计取舍：
 
 - **写在本地 JSON**：`.studybuddy/memory.json`，能打开看、能删、能拷到另一台机器。
-- **不阻塞回答**：记忆抽取是一次额外调用，失败了就跳过，绝不影响你拿到答案。
+- **网页不等待记忆抽取**：回答先返回，后台再提取并保存记忆；清空记忆会废弃尚未保存的旧任务。
+  后台队列最多容纳 8 个任务，满时提示本轮跳过记忆，退出服务时等待已排队任务结束。
+  CLI 和 Python API 默认同步保存；`WebApp(..., background_memory=True)` 可开启后台模式，使用后调用 `close()`。
+- **记忆失败不丢回答**：后台提取失败会在终端记录；提问接口传 `remember: false` 可关闭本轮记忆读写。
 - **可完全关闭**：`studybuddy ask ... --no-memory` 既不读也不写。
 - **遗忘曲线用简化 SM-2**：答对第一次 1 天、第二次 6 天、之后按难度系数递增；答错重置为 1 天并降低难度系数。
 
@@ -426,7 +435,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 364 个测试
+make check       # ruff + mypy --strict + 385 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -494,6 +503,6 @@ citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams (no tokenizer dependency), so it runs fully offline except for the
 model calls. Chinese and English textbooks are both supported and tested.
-364 offline tests, MIT licensed.
+385 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

@@ -650,6 +650,10 @@ function renderMemory(root, data) {
 
 async function uploadFile(file) {
   const status = $("status");
+  if (file.size > 80 * 1024 * 1024) {
+    status.textContent = "文件太大（上限 80MB）";
+    return;
+  }
   status.textContent = `导入 ${file.name}…`;
   const base64 = await new Promise((resolve, reject) => {
     const reader = new FileReader();
