@@ -14,7 +14,7 @@ from typing import Any
 
 from .errors import PDFError
 
-__all__ = ["PdfPage", "PdfDocument", "read_pdf", "clean_text"]
+__all__ = ["PdfPage", "PdfDocument", "read_pdf", "clean_text", "repair_surrogates"]
 
 # A line that is only a page number, e.g. "42", "- 42 -", "第 42 页".
 _PAGE_NUMBER_LINE = re.compile(r"^[\s\-—–·•∙⋅・]*(\d{1,4}|第\s*\d{1,4}\s*页)[\s\-—–·•∙⋅・]*$")
@@ -69,8 +69,29 @@ class PdfDocument:
         return "\n\n".join(page.text for page in self.pages if not page.is_empty)
 
 
+def repair_surrogates(text: str) -> str:
+    """Join UTF-16 surrogate halves that pypdf leaks for maths symbols.
+
+    PDFs with italic maths glyphs (𝑥 U+1D465, 𝑛 U+1D45B) sometimes map them through
+    a ToUnicode CMap that pypdf decodes into two *lone* surrogates instead of one
+    astral character. A `str` holding lone surrogates looks fine in memory but
+    cannot be encoded as UTF-8, so writing the chunk index raised
+    ``UnicodeEncodeError: surrogates not allowed`` and the whole import failed.
+
+    Encoding with ``surrogatepass`` and decoding again recombines valid pairs and
+    turns the genuinely broken ones into U+FFFD, which is both visible and safe.
+    The cheap ``encode`` probe keeps the fast path free of extra copies.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text
+
+
 def clean_text(text: str) -> str:
     """Repair the usual extraction artefacts (PDF or OCR) without touching the words."""
+    text = repair_surrogates(text)
     text = unicodedata.normalize("NFC", text)
     text = text.translate(_COMPAT_TABLE)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -135,7 +156,7 @@ def read_pdf(path: str | Path) -> PdfDocument:
         )
 
     metadata: Any = reader.metadata or {}
-    title = str(metadata.get("/Title") or "").strip()
-    author = str(metadata.get("/Author") or "").strip()
+    title = repair_surrogates(str(metadata.get("/Title") or "")).strip()
+    author = repair_surrogates(str(metadata.get("/Author") or "")).strip()
 
     return PdfDocument(path=file, pages=pages, title=title, author=author)

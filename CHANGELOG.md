@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **含数学斜体符号的 PDF 导入失败**：这类教材里的 𝑥（U+1D465）、𝑛 等字形会被 pypdf
+  抽成两个未配对的 UTF-16 代理项；`str` 在内存里看着正常，但写 `chunks.jsonl` 时按
+  UTF-8 编码会抛 `UnicodeEncodeError: surrogates not allowed`，整本书导入中止。
+  现在 `clean_text()` 会先重新拼接合法代理对、把残缺的一半替换为 U+FFFD；PDF 元数据
+  里的标题与作者也走同一条修复。
+
 ## [0.8.5] - 2026-10-28
 
 ### 修复

@@ -70,6 +70,26 @@ class TestReadPdf(unittest.TestCase):
             read_pdf(blank)
         self.assertIn("OCR", str(ctx.exception))
 
+    def test_lone_surrogate_is_repaired(self) -> None:
+        # Regression: pypdf hands back lone surrogates for italic maths glyphs
+        # (𝑥 U+1D465 = "\ud835\udc65"), which used to abort the import with
+        # "UnicodeEncodeError: surrogates not allowed" when the index was written.
+        from studybuddy.pdf import clean_text
+
+        paired = clean_text("设 f(\ud835\udc65) = x²")
+        self.assertIn("f(\U0001d465)", paired)
+        paired.encode("utf-8")  # must not raise
+
+        unpaired = clean_text("残破的 \ud835 符号")
+        unpaired.encode("utf-8")  # must not raise either
+        self.assertIn("\ufffd", unpaired)
+
+    def test_clean_text_is_utf8_safe_for_every_input(self) -> None:
+        from studybuddy.pdf import clean_text
+
+        for text in ("\ud835", "\udc65", "a\ud835b", "\ud835\udc65\ud835"):
+            clean_text(text).encode("utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()
