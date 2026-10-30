@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **桌面窗口 `studybuddy desktop`**：界面不再必须待在浏览器标签页里。后端按
+  pywebview 原生窗口 → Edge/Chrome app 模式 → 系统默认浏览器 的顺序降级，任何一步
+  失败都只是往下退，不会让应用崩掉。窗口关闭即进程退出，端口不会残留；app 模式用
+  数据目录下独立的 `browser-profile/`，不碰日常浏览器的标签页与历史。
+- **可双击运行的打包产物**：`packaging/studybuddy-desktop.spec` 用 PyInstaller
+  打成 onedir 版本（Windows 出 `StudyBuddy.exe`，macOS 出 `.app`），打包版的数据目录
+  默认落到每用户的应用数据目录，并新增 `--check` 自检供 CI 验证。
+  `.github/workflows/desktop.yml` 在 `v*` tag 上构建并附到 release。
+
 ### 修复
 
 - **含数学斜体符号的 PDF 导入失败**：这类教材里的 𝑥（U+1D465）、𝑛 等字形会被 pypdf

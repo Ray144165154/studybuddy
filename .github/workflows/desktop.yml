@@ -1,0 +1,57 @@
+name: Desktop build
+
+# Builds the double-clickable app. Runs on demand and on version tags; a tag also
+# attaches the artifact to the GitHub release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Self-check from source
+        run: python -m studybuddy --root "$env:TEMP\sb-smoke" desktop --check
+
+      - name: Build
+        run: pyinstaller packaging/studybuddy-desktop.spec --noconfirm --distpath dist --workpath build
+
+      - name: Smoke test the binary
+        # A windowed exe does not block the shell, so Start-Process -Wait is required.
+        run: |
+          $p = Start-Process -FilePath "dist\StudyBuddy\StudyBuddy.exe" -ArgumentList "--check" -Wait -PassThru `
+               -RedirectStandardOutput check.log -RedirectStandardError check.err
+          Get-Content check.log, check.err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Error "自检失败，退出码 $($p.ExitCode)"; exit 1 }
+
+      - name: Package
+        # Onedir distribution: ship the whole folder, not a single file.
+        run: Compress-Archive -Path dist\StudyBuddy\* -DestinationPath dist\StudyBuddy-windows.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyBuddy-windows
+          path: dist/StudyBuddy-windows.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/StudyBuddy-windows.zip

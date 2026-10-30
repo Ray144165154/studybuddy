@@ -138,6 +138,7 @@ make demo
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
 | `studybuddy ui` | 打开本地网页界面（浏览器里提问、导入、看记忆） |
+| `studybuddy desktop` | 把界面放进独立窗口（原生窗口，或 Edge/Chrome 的 app 模式） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
 | `studybuddy summary --book 高等数学 --chapter 3` | 第 3 章复习提纲 |
 | `studybuddy compare "导数" "微分"` | 易混概念对比表 |
@@ -251,6 +252,45 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 | API Key | 只存在进程内存，不写盘、不回显 |
 
 默认监听 `127.0.0.1`；用 `studybuddy ui --host 0.0.0.0` 暴露到局域网时会在终端给出警告。
+
+## 桌面端（窗口 / 双击启动）
+
+不想留着浏览器标签页，就让它自带一个窗口：
+
+```bash
+studybuddy desktop                      # 自动挑空闲端口，开窗
+studybuddy desktop --native webview     # 只接受原生窗口
+studybuddy desktop --size 1440x900      # 窗口尺寸
+```
+
+窗口后端按顺序尝试，任何一步失败都会自动往下退，不会把应用带崩：
+
+| 后端 | 需要什么 | 效果 |
+| --- | --- | --- |
+| **pywebview** | `pip install "studybuddy[desktop]"` | 真正的原生窗口（Windows 用 WebView2、macOS 用 WKWebView、Linux 用 WebKitGTK） |
+| **Chromium app 模式** | Edge（Win10+ 自带）或 Chrome | 独立窗口、独立配置目录，不碰你日常浏览器的标签页和历史 |
+| **系统默认浏览器** | 无 | 等同 `studybuddy ui` |
+
+窗口生命周期就是进程生命周期：**关掉窗口，服务就退出**，不会留下占着端口的后台进程。
+app 模式用的是数据目录下的 `browser-profile/`，和你自己的浏览器完全隔离。
+
+### 双击运行的 exe / .app
+
+```bash
+pyinstaller packaging/studybuddy-desktop.spec --noconfirm
+# Windows: dist/StudyBuddy/StudyBuddy.exe
+# macOS:   dist/StudyBuddy.app
+```
+
+双击即可，没有命令行窗口。打包版没有可靠的"当前目录"，所以数据目录默认落在
+`%LOCALAPPDATA%\studybuddy`（macOS 是 `~/Library/Application Support/studybuddy`），
+用 `--root` 或 `STUDYBUDDY_ROOT` 可以改。产物自带 `--check` 自检：
+
+```powershell
+dist\StudyBuddy\StudyBuddy.exe --check
+```
+
+`.github/workflows/desktop.yml` 会在打 `v*` tag 时构建 exe、跑一次 `--check`，并附到 release 上。
 
 ## 混合检索（可选）
 

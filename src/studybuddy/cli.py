@@ -32,11 +32,43 @@ def _safe_console() -> None:
     to UTF-8, where the default ANSI code page would raise UnicodeEncodeError.
     """
     for stream in (sys.stdout, sys.stderr):
+        if stream is None:  # windowed builds have no console streams at all
+            continue
         try:
             if not stream.isatty():
                 stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError, OSError):
             pass
+
+
+def _default_root() -> str:
+    """Where the library lives when the user does not say.
+
+    A packaged desktop build has no meaningful working directory -- double-clicking
+    the exe makes cwd the install folder, which may be read-only -- so it falls back
+    to the per-user application data directory instead.
+    """
+    env = os.environ.get("STUDYBUDDY_ROOT")
+    if env:
+        return env
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+        return str(Path(base) / "studybuddy")
+    return ".studybuddy"
+
+
+def _parse_size(value: str) -> tuple[int, int]:
+    """Parse ``1280x900`` (or ``1280*900``) into a window size, with sane clamping."""
+    parts = value.lower().replace("*", "x").split("x")
+    if len(parts) != 2:
+        raise StudyError(f"窗口大小格式应为 宽x高，例如 1280x900（收到 {value!r}）")
+    try:
+        width, height = (int(part) for part in parts)
+    except ValueError:
+        raise StudyError(f"窗口大小必须是整数，例如 1280x900（收到 {value!r}）") from None
+    if width < 640 or height < 480:
+        raise StudyError("窗口太小了，至少 640x480")
+    return width, height
 
 
 def _supports_color() -> bool:
@@ -62,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--root",
-        default=os.environ.get("STUDYBUDDY_ROOT", ".studybuddy"),
+        default=_default_root(),
         help="数据目录，默认 .studybuddy（也可用 STUDYBUDDY_ROOT 设置）",
     )
     parser.add_argument("-m", "--model", default=os.environ.get("STUDYBUDDY_MODEL", "gpt-4o-mini"))
@@ -159,6 +191,23 @@ def _build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("-p", "--port", type=int, default=8765)
     ui.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+
+    desktop = sub.add_parser("desktop", help="以桌面窗口打开界面（原生窗口，或 Edge/Chrome app 模式）")
+    desktop.add_argument("--host", default="127.0.0.1")
+    desktop.add_argument("-p", "--port", type=int, default=0, help="0 = 自动挑一个空闲端口")
+    desktop.add_argument(
+        "--native",
+        choices=["auto", "webview", "browser"],
+        default="auto",
+        help="auto: 先试 pywebview，再试 Edge/Chrome app 模式；webview: 只用原生窗口；"
+        "browser: 只用浏览器窗口",
+    )
+    desktop.add_argument("--size", default="1280x900", help="窗口大小，例如 1280x900")
+    desktop.add_argument(
+        "--check",
+        action="store_true",
+        help="只自检：启动服务、访问一次接口、退出（打包产物和 CI 用）",
+    )
 
     sub.add_parser("doctor", help="环境自检：检查模型、Key、书库、搜索是否就绪")
     sub.add_parser("stats", help="显示书库与记忆概况")
@@ -520,6 +569,20 @@ def main(argv: list[str] | None = None) -> int:
                 open_browser=not args.no_open,
             )
             return 0
+
+        if args.command == "desktop":
+            from .desktop import run_desktop
+
+            width, height = _parse_size(args.size)
+            return run_desktop(
+                buddy,
+                host=args.host,
+                port=args.port,
+                native=args.native,
+                width=width,
+                height=height,
+                check=args.check,
+            )
 
         if args.command == "index":
 

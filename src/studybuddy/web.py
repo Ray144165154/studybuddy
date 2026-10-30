@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -532,6 +533,9 @@ class WebApp:
 
 class _Handler(BaseHTTPRequestHandler):
     app: WebApp
+    # Optional listener for "a client fetched this URL". The desktop window uses it
+    # to tell "the page really loaded" from "the browser ignored our argument".
+    on_request: Callable[[str], None] | None = None
     server_version = f"studybuddy/{__version__}"
     timeout = 20  # a stalled client must not hold a thread forever
 
@@ -577,6 +581,8 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ---------------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        if self.on_request is not None:
+            self.on_request(self.path)
         if not self._host_ok():
             self._send_json(403, {"error": "host not allowed"})
             return
@@ -650,6 +656,33 @@ class _Handler(BaseHTTPRequestHandler):
     do_OPTIONS = _method_not_allowed  # noqa: N815
 
 
+def make_server(
+    buddy: StudyBuddy,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    background_memory: bool = True,
+    on_request: Callable[[str], None] | None = None,
+) -> tuple[ThreadingHTTPServer, WebApp, str]:
+    """Build a bound (not yet serving) HTTP server for the UI.
+
+    ``port=0`` picks a free port, which is what the desktop window wants: it must
+    not collide with a browser tab the user already has open. ``on_request`` is an
+    optional callback used by the desktop launcher to observe that a client fetched
+    the page.
+    """
+    app = WebApp(buddy, background_memory=background_memory)
+    # staticmethod: a plain function set on a class binds as a method, and the
+    # handler would then be passed ``self`` on top of the path.
+    handler = type(
+        "Handler",
+        (_Handler,),
+        {"app": app, "on_request": staticmethod(on_request) if on_request is not None else None},
+    )
+    server = ThreadingHTTPServer((host, port), handler)
+    return server, app, f"http://{host}:{server.server_address[1]}"
+
+
 def serve(
     buddy: StudyBuddy,
     *,
@@ -658,10 +691,7 @@ def serve(
     open_browser: bool = True,
 ) -> None:
     """Run the UI until interrupted."""
-    app = WebApp(buddy, background_memory=True)
-    handler = type("Handler", (_Handler,), {"app": app})
-    server = ThreadingHTTPServer((host, port), handler)
-    url = f"http://{host}:{server.server_address[1]}"
+    server, app, url = make_server(buddy, host=host, port=port)
 
     print(f"studybuddy {__version__}  →  {url}", flush=True)
     print(f"数据目录: {buddy.library.root}", flush=True)
