@@ -118,6 +118,7 @@ class Library:
         source: str = "",
         chunk_size: int = 800,
         book_id: str | None = None,
+        warnings: list[str] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> Book:
         """Index already-extracted text.
@@ -141,6 +142,7 @@ class Library:
             pages=len(page_list),
             source=source,
             added_at=datetime.now().isoformat(timespec="seconds"),
+            warnings=list(warnings or []),
         )
 
         if on_progress:
@@ -185,6 +187,7 @@ class Library:
             source=str(file),
             chunk_size=chunk_size,
             book_id=f"{slugify(book_title)}-{digest}",
+            warnings=document.warnings,
             on_progress=on_progress,
         )
 

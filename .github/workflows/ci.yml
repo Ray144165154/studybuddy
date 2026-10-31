@@ -49,6 +49,9 @@ jobs:
       - name: Frontend render tests
         run: node tests/js/render.test.js
 
+      - name: Frontend upload tests
+        run: node tests/js/upload.test.js
+
       - name: Test
         run: python -m unittest discover -s tests -v
 
@@ -92,6 +95,9 @@ jobs:
 
       - name: Frontend render tests
         run: node tests/js/render.test.js
+
+      - name: Frontend upload tests
+        run: node tests/js/upload.test.js
 
       - name: Test
         run: python -m unittest discover -s tests -v

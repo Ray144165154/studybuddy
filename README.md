@@ -546,3 +546,18 @@ model calls. Chinese and English textbooks are both supported and tested.
 385 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+
+
+### 换电脑与首次使用
+
+1. Windows 桌面包请先完整解压，保留 `StudyBuddy.exe` 同级的 `_internal` 文件夹，再双击启动。不要只复制 exe，也不要在压缩包内运行。桌面包无需项目源码目录。
+2. 源码安装用户先在源码目录运行 `python -m pip install .`，之后可从任意目录运行 `studybuddy desktop`。不要直接打开 `webui/index.html`。
+3. 在设置中填写服务商的模型 ID、API 基础地址与 API Key。网页聊天订阅不等于 API 服务；保存设置不代表连接验证成功。API Key 每次重启需重新填写。
+4. 导入可选择文字、无密码且不超过 80MB 的 PDF。扫描件先 OCR，再导入生成的 PDF。导入无需模型 Key。
+5. 点击回答中的 `[1]` 查看来源，结合显示的原文核对答案。页码是从封面开始的 PDF 页序，不一定等于印刷页码。
+
+默认数据目录现已与启动目录分离：Windows 使用 `%LOCALAPPDATA%/studybuddy`，macOS 使用 `~/Library/Application Support/studybuddy`，Linux 使用 `$XDG_DATA_HOME/studybuddy`（未设置时为 `~/.local/share/studybuddy`）。页面书库下方显示实际路径。
+
+旧版书库不会自动移动。如原数据在项目下的 `.studybuddy`，请使用 `studybuddy --root "旧数据目录的绝对路径" desktop`，或将整个旧数据目录复制到上述新位置。迁移前关闭程序；已有新书库时请勿直接覆盖。`--root` 和 `STUDYBUDDY_ROOT` 仍可指定位置。
+
+桌面包的 `--check` 现在会在临时书库中通过 HTTP 上传中文 PDF，验证解析依赖及上传流程，不改动正式教材。

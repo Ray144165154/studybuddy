@@ -155,6 +155,20 @@ class TestRunDesktop(DesktopTestCase):
 
 
 class TestCliHelpers(unittest.TestCase):
+    def test_macos_data_root_is_independent_of_working_directory(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("sys.platform", "darwin"):
+            expected = str(Path.home() / "Library" / "Application Support" / "studybuddy")
+            self.assertEqual(_default_root(), expected)
+            with patch("sys.frozen", True, create=True):
+                self.assertEqual(_default_root(), expected)
+
+    def test_windows_data_root_is_shared_by_source_and_packaged_app(self) -> None:
+        with (
+            patch.dict(os.environ, {"LOCALAPPDATA": "C:/Users/student/AppData/Local"}, clear=True),
+            patch("sys.platform", "win32"),
+        ):
+            self.assertEqual(_default_root(), str(Path(os.environ["LOCALAPPDATA"]) / "studybuddy"))
+
     def test_size_parsing(self) -> None:
         self.assertEqual(_parse_size("1280x900"), (1280, 900))
         self.assertEqual(_parse_size("1000*700"), (1000, 700))
@@ -171,7 +185,7 @@ class TestCliHelpers(unittest.TestCase):
     def test_frozen_default_root_is_per_user(self) -> None:
         with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\ray\AppData\Local"}, clear=False):
             os.environ.pop("STUDYBUDDY_ROOT", None)
-            with patch("sys.frozen", True, create=True):
+            with patch("sys.frozen", True, create=True), patch("sys.platform", "win32"):
                 self.assertEqual(_default_root(), str(Path(r"C:\Users\ray\AppData\Local") / "studybuddy"))
 
 

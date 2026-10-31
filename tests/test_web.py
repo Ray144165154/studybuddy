@@ -149,7 +149,7 @@ class TestAsk(WebTestCase):
             self.root,
             model="deepseek-chat",
             api_key="",
-            llm=LLM(model="deepseek-chat", api_key="", base_url="http://127.0.0.1:9/v1"),
+            llm=LLM(model="deepseek-chat", api_key="", base_url="https://model.example.invalid/v1"),
             library=self.library,
             memory=self.memory,
         )
@@ -216,6 +216,22 @@ class TestBackgroundMemory(WebTestCase):
 
 
 class TestBooksAndUpload(WebTestCase):
+    def test_local_model_does_not_require_a_key(self) -> None:
+        from studybuddy import LLM
+
+        app = self.app()
+        app.buddy.llm = LLM(api_key="not-needed", base_url="http://127.0.0.1:11434/v1")
+        self.assertTrue(app.llm_ready)
+
+    def test_invalid_model_address_does_not_change_settings(self) -> None:
+        app = self.app()
+        before = app.buddy.model
+        for base in ("chat.example.com", "https://example.com/v1/chat/completions"):
+            status, data = app.dispatch("POST", "/api/config", {"model": "changed", "base_url": base}, {})
+            self.assertEqual(status, 400)
+            self.assertIn("地址", data["error"])
+            self.assertEqual(app.buddy.model, before)
+
     def test_add_text(self) -> None:
         status, data = self.app().dispatch(
             "POST", "/api/add-text", {"title": "笔记", "text": "条件概率的定义。"}, {}
@@ -236,7 +252,10 @@ class TestBooksAndUpload(WebTestCase):
         )
         self.assertEqual(status, 200)
         self.assertGreater(data["book"]["chunks"], 0)
-        self.assertTrue((self.root / "uploads" / "book.pdf").exists())
+        source = Path(data["book"]["source"])
+        self.assertTrue(source.is_relative_to((self.root / "uploads").resolve()))
+        self.assertEqual(source.name, "book.pdf")
+        self.assertEqual(source.read_bytes(), pdf.read_bytes())
 
     def test_upload_rejects_bad_base64(self) -> None:
         status, data = self.app().dispatch("POST", "/api/add-book", {"name": "x.pdf", "data": "!!!"}, {})

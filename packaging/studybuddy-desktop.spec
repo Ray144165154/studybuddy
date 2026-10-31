@@ -16,6 +16,7 @@ needed; users who want a native window can still
 ``pip install "studybuddy[desktop]"`` and run the console script.
 """
 
+import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821 - SPECPATH is injected by PyInstaller
@@ -26,7 +27,8 @@ a = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "desktop_entry.py")],
     pathex=[str(SRC)],
     binaries=[],
-    datas=[(str(WEBUI), "studybuddy/webui")],
+    datas=[(str(WEBUI), "studybuddy/webui"),
+           (str(ROOT / "tests" / "fixtures" / "zh_sample.pdf"), "studybuddy")],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
@@ -64,14 +66,15 @@ coll = COLLECT(  # noqa: F821
     name="StudyBuddy",
 )
 
-app = BUNDLE(  # noqa: F821
-    coll,
-    name="StudyBuddy.app",
-    icon=None,
-    bundle_identifier="io.github.ray144165154.studybuddy",
-    info_plist={
-        "CFBundleShortVersionString": "0.8.5",
-        "LSMinimumSystemVersion": "11.0",
-        "NSHighResolutionCapable": True,
-    },
-)
+if sys.platform == "darwin":
+    app = BUNDLE(  # noqa: F821
+        coll,
+        name="StudyBuddy.app",
+        icon=None,
+        bundle_identifier="io.github.ray144165154.studybuddy",
+        info_plist={
+            "CFBundleShortVersionString": "0.8.5",
+            "LSMinimumSystemVersion": "11.0",
+            "NSHighResolutionCapable": True,
+        },
+    )

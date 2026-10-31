@@ -239,7 +239,7 @@ function renderWelcome() {
     {
       done: !needsModel,
       title: "接入模型",
-      body: "选择 DeepSeek / OpenAI / 本地 Ollama，粘贴 API Key。Key 只存在内存里。",
+      body: "选择服务商，填写该服务商的模型 ID、接口地址和 API Key。聊天网站账号或订阅不能代替 API Key；重启后需重新填写 Key。",
       action: "去配置",
       onAction: openSettings,
     },
@@ -253,7 +253,7 @@ function renderWelcome() {
     {
       done: false,
       title: "开始提问",
-      body: "问教材里的概念、定理、例题。回答会带页码。",
+      body: "先问“第一章主要讲什么？”。点击 [1] 核对原文片段；页码是 PDF 从封面起的页序，可能与书上印刷页码不同。",
       action: null,
       onAction: null,
     },
@@ -295,7 +295,8 @@ async function refresh() {
   STATE = await api("/api/state");
   renderStatus();
   renderBooks();
-  if (!$("messages").querySelector(".bubble, .onboarding")) renderWelcome();
+  $("data-root").textContent = STATE.root;
+  if (!$("messages").querySelector(".bubble")) renderWelcome();
   const webBox = $("web");
   if (!STATE.web_ready) {
     webBox.disabled = true;
@@ -335,6 +336,11 @@ function scrollDown() {
 async function ask(question) {
   if (!STATE || !STATE.stats.books) {
     alert("先导入一本教材");
+    return;
+  }
+  if (!STATE.llm_ready) {
+    $("question").value = question;
+    openSettings();
     return;
   }
   addUser(question);
@@ -462,16 +468,16 @@ function renderAnswer(card, data) {
 
   if (data.sources && data.sources.length) {
     const sources = el("div", "sources");
-    sources.append(el("div", "label", "来源"));
+    sources.append(el("div", "label", "检索到的教材片段（引用编号不代表内容已经核实）"));
     const list = el("ol");
     for (const source of data.sources) {
       const item = el("li");
       const where = source.section
-        ? `《${source.book}》第${source.page}页 · ${source.section}`
-        : `《${source.book}》第${source.page}页`;
+        ? `《${source.book}》PDF 第${source.page}页 · ${source.section}`
+        : `《${source.book}》PDF 第${source.page}页`;
       item.append(el("span", "where", where));
       if (source.unreliable) item.append(el("span", "badge", "公式可能失真"));
-      item.title = source.snippet || "";
+      item.append(el("p", "foot", source.snippet || "无可显示的原文片段"));
       list.append(item);
     }
     sources.append(list);
@@ -655,22 +661,24 @@ async function uploadFile(file) {
     return;
   }
   status.textContent = `导入 ${file.name}…`;
-  const base64 = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.onerror = () => reject(new Error("读取文件失败"));
-    reader.readAsDataURL(file);
-  });
-
   try {
-    await api("/api/add-book", {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1]);
+      reader.onerror = () => reject(new Error("读取文件失败，请重新选择文件"));
+      reader.onabort = () => reject(new Error("文件读取已取消"));
+      reader.readAsDataURL(file);
+    });
+    const result = await api("/api/add-book", {
       name: file.name,
       data: base64,
       course: $("course").value.trim(),
     });
     $("course").value = "";
     await refresh();
+    const warnings = result.book?.warnings || [];
     status.textContent = `已导入 ${file.name}`;
+    if (warnings.length) alert(`教材已导入，但内容不完整：\n${warnings.join("\n")}`);
     setTimeout(renderStatus, 2500);
   } catch (error) {
     alert(`导入失败: ${error.message}`);
@@ -683,6 +691,7 @@ function openSettings() {
     $("set-model").value = STATE.model || "";
     $("set-base").value = STATE.base_url || "";
   }
+  $("settings-error").textContent = "";
   $("settings").showModal();
 }
 
@@ -732,6 +741,7 @@ document.querySelectorAll(".presets button").forEach((button) => {
   button.onclick = () => {
     $("set-model").value = button.dataset.model;
     $("set-base").value = button.dataset.base;
+    $("set-key").value = button.dataset.base.startsWith("http://127.0.0.1:") ? "not-needed" : "";
     $("set-key").focus();
   };
 });
@@ -739,7 +749,9 @@ document.querySelectorAll(".presets button").forEach((button) => {
 $("btn-settings").onclick = openSettings;
 $("btn-save-settings").onclick = (event) => {
   event.preventDefault();
-  saveSettings().then(() => $("settings").close());
+  saveSettings().then(() => $("settings").close()).catch((error) => {
+    $("settings-error").textContent = error.message;
+  });
 };
 
 refresh().catch((error) => {

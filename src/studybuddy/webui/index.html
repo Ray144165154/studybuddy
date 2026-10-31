@@ -30,17 +30,18 @@
 
       <div class="uploader">
         <label class="btn secondary block" for="file">导入 PDF 教材</label>
-        <input id="file" type="file" accept="application/pdf" hidden>
+        <input id="file" type="file" accept=".pdf,application/pdf" hidden>
         <input id="course" class="text" placeholder="课程名（可选），如 高等数学">
-        <div class="hint">扫描版请先用 OCR，再用 <code>studybuddy add-text</code> 导入</div>
+        <div class="hint">单个 PDF 最大 80MB。扫描版请先 OCR，生成可选择文字的 PDF 后在这里导入。无需 API Key 即可导入。</div>
       </div>
+      <details class="hint"><summary>教材保存在哪里？</summary><p id="data-root" style="overflow-wrap:anywhere"></p><p>这是本机数据目录，不是项目源码目录。换电脑需复制整个数据目录；API Key 需重新填写。</p></details>
     </aside>
 
     <section class="chat">
       <div id="messages" class="messages">
         <div class="empty">
           <h1>问你的教材</h1>
-          <p>先导入一本 PDF，然后随便问。每个回答都会标出页码，方便你翻书核对。</p>
+          <p>先导入一本 PDF，然后随便问。配置模型后可提问；点击回答中的引用，核对教材原文与 PDF 页序。</p>
         </div>
       </div>
 
@@ -87,6 +88,8 @@
         <dd>不会。只存在当前进程内存，关掉就没了；模型和端点会记住。</dd>
         <dt>支持哪些模型</dt>
         <dd>任何 OpenAI 兼容接口：DeepSeek、OpenAI、OpenRouter、Ollama、vLLM。</dd>
+        <dt>换电脑后无法上传或找不到目录</dt><dd>Windows 请先解压整个桌面安装包，保留 exe 同级的 _internal 文件夹，再运行 exe。不要在压缩包内启动或只复制 exe。书库下方可查看实际数据目录；源码版需安装 Python 和项目依赖后启动，不能直接双击 index.html。</dd>
+        <dt>引用页码为什么对不上</dt><dd>[1] 是来源编号，不是页码；PDF 页序从封面算起，可能不同于印刷页码。来源片段用于核对模型说法，引用编号正确不保证推理正确。</dd>
         <dt>还是搞不定</dt>
         <dd>在终端运行 <code>studybuddy doctor</code>，它会指出缺什么。</dd>
       </dl>
@@ -105,15 +108,17 @@
         <button type="button" class="btn tiny" data-model="gpt-4o-mini" data-base="https://api.openai.com/v1">OpenAI</button>
         <button type="button" class="btn tiny" data-model="llama3.1" data-base="http://127.0.0.1:11434/v1">本地 Ollama</button>
       </div>
-      <label>模型
+      <p class="hint">填写服务商 API 控制台提供的信息，不是聊天网页地址。API 使用可能单独计费。保存设置只表示已填写，不代表网络和账户已验证。本地 Ollama 需先启动服务并下载对应模型。</p>
+      <label>模型 ID（须与服务商提供的名称一致）
         <input id="set-model" class="text" placeholder="deepseek-chat">
       </label>
-      <label>接口地址
+      <label>API 基础地址（通常以 /v1 结尾，不含 /chat/completions）
         <input id="set-base" class="text" placeholder="https://api.deepseek.com/v1">
       </label>
       <label>API Key
         <input id="set-key" class="text" type="password" placeholder="sk-…">
       </label>
+      <p id="settings-error" class="warn" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn ghost" value="cancel">取消</button>
         <button class="btn primary" id="btn-save-settings" value="default">保存</button>

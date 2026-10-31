@@ -5,6 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from pypdf import PdfReader, PdfWriter
 
 from studybuddy import read_pdf
 from studybuddy.errors import PDFError
@@ -69,6 +72,56 @@ class TestReadPdf(unittest.TestCase):
         with self.assertRaises(PDFError) as ctx:
             read_pdf(blank)
         self.assertIn("OCR", str(ctx.exception))
+
+    def encrypted_pdf(self, password: str) -> Path:
+        source = make_textbook(self.tmp / "source.pdf")
+        writer = PdfWriter()
+        writer.append(PdfReader(source))
+        writer.encrypt(password)
+        target = self.tmp / "encrypted.pdf"
+        writer.write(target)
+        return target
+
+    def test_partial_extraction_warning_survives_library_reload(self) -> None:
+        from studybuddy import Library
+
+        source = make_textbook(self.tmp / "partial.pdf")
+        library = Library(self.tmp / "library")
+        with patch(
+            "pypdf._page.PageObject.extract_text", side_effect=[ValueError("font"), "Valid textbook text"]
+        ):
+            book = library.add_book(source)
+        self.assertEqual(book.pages, 2)
+        self.assertEqual(len(book.warnings), 1)
+        self.assertIn("：1。", book.warnings[0])
+        restored = Library(library.root)
+        self.assertEqual(restored.books[0].warnings, book.warnings)
+        self.assertEqual(restored.chunks[0].page, 2)
+
+    def test_password_protected_pdf_has_actionable_error(self) -> None:
+        with self.assertRaisesRegex(PDFError, "密码"):
+            read_pdf(self.encrypted_pdf("secret"))
+
+    def test_empty_password_encryption_is_supported(self) -> None:
+        document = read_pdf(self.encrypted_pdf(""))
+        self.assertEqual(document.non_empty_pages, 2)
+
+    def test_broken_page_tree_is_a_pdf_error(self) -> None:
+        source = make_textbook(self.tmp / "book.pdf")
+        with patch("pypdf.PdfReader") as reader:
+            reader.return_value.is_encrypted = False
+            reader.return_value.pages.__iter__.side_effect = ValueError("broken page tree")
+            with self.assertRaises(PDFError):
+                read_pdf(source)
+
+    def test_extraction_failure_is_not_reported_as_a_scan(self) -> None:
+        source = make_textbook(self.tmp / "book.pdf")
+        with (
+            patch("pypdf._page.PageObject.extract_text", side_effect=ValueError("broken font")),
+            self.assertRaises(PDFError) as ctx,
+        ):
+            read_pdf(source)
+        self.assertNotIn("scanned", str(ctx.exception))
 
     def test_lone_surrogate_is_repaired(self) -> None:
         # Regression: pypdf hands back lone surrogates for italic maths glyphs

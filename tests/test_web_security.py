@@ -310,7 +310,42 @@ class TestUploads(SecurityTestCase):
         status, data = self.upload("book.pdf", self.pdf_b64())
         self.assertEqual(status, 200)
         self.assertGreater(data["book"]["chunks"], 0)
-        self.assertTrue((self.root / "uploads" / "book.pdf").is_file())
+        self.assertTrue(Path(data["book"]["source"]).is_file())
+
+    def test_failed_same_name_upload_preserves_original(self) -> None:
+        app = self.make_app()
+        status, first = self.upload("book.pdf", self.pdf_b64(), app=app)
+        self.assertEqual(status, 200)
+        source = Path(first["book"]["source"])
+        original = source.read_bytes()
+        status, _data = self.upload("book.pdf", base64.b64encode(b"invalid PDF").decode(), app=app)
+        self.assertEqual(status, 400)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(len(list((self.root / "uploads").rglob("*.pdf"))), 1)
+
+    def test_password_protected_upload_returns_400(self) -> None:
+        from pypdf import PdfReader, PdfWriter
+
+        writer = PdfWriter()
+        writer.append(PdfReader(make_textbook(self.tmp / "plain.pdf")))
+        writer.encrypt("secret")
+        target = self.tmp / "locked.pdf"
+        writer.write(target)
+        status, data = self.upload("locked.pdf", base64.b64encode(target.read_bytes()).decode())
+        self.assertEqual(status, 400)
+        self.assertIn("密码", data["error"])
+        self.assertEqual(list((self.root / "uploads").iterdir()), [])
+
+    def test_identical_uploads_reuse_source_file(self) -> None:
+        app = self.make_app()
+        status, first = self.upload("book.pdf", self.pdf_b64(), app=app)
+        self.assertEqual(status, 200)
+        status, second = self.upload("book.pdf", self.pdf_b64(), app=app)
+        self.assertEqual(status, 200)
+        self.assertEqual(first["book"]["source"], second["book"]["source"])
+        self.assertEqual(first["book"]["id"], second["book"]["id"])
+        self.assertTrue(Path(first["book"]["source"]).is_file())
+        self.assertTrue(Path(second["book"]["source"]).is_file())
 
     def test_relative_filename_traversal_is_rejected(self) -> None:
         status, data = self.upload("../escaped.pdf", self.pdf_b64())
@@ -350,7 +385,7 @@ class TestUploads(SecurityTestCase):
         status, data = self.upload("bad.pdf", encoded)
         self.assertEqual(status, 400)
         self.assertNotIn("Traceback", json.dumps(data))
-        self.assertFalse((self.root / "uploads" / "bad.pdf").exists(), "temp file leaked")
+        self.assertEqual(list((self.root / "uploads").iterdir()), [], "temp file leaked")
 
     def test_upload_limit_is_enforced_after_decoding(self) -> None:
         encoded = base64.b64encode(b"x" * 2048).decode()

@@ -132,6 +132,7 @@ class Book:
     chunks: int = 0
     source: str = ""
     added_at: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +143,7 @@ class Book:
             "chunks": self.chunks,
             "source": self.source,
             "added_at": self.added_at,
+            "warnings": self.warnings,
         }
 
     @classmethod
@@ -154,6 +156,7 @@ class Book:
             chunks=int(data.get("chunks") or 0),
             source=str(data.get("source", "")),
             added_at=str(data.get("added_at", "")),
+            warnings=list(data.get("warnings") or []),
         )
 
 

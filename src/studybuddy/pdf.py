@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,7 @@ class PdfDocument:
     pages: list[PdfPage]
     title: str = ""
     author: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def page_count(self) -> int:
@@ -137,19 +138,31 @@ def read_pdf(path: str | Path) -> PdfDocument:
 
     if reader.is_encrypted:
         try:
-            reader.decrypt("")
+            unlocked = reader.decrypt("")
         except Exception as exc:  # noqa: BLE001
             raise PDFError(f"PDF is encrypted and could not be opened: {file.name}") from exc
+        if not unlocked:
+            raise PDFError(f"PDF 需要密码：{file.name}。请先解密并另存为无密码 PDF，再导入。")
 
     pages: list[PdfPage] = []
-    for number, page in enumerate(reader.pages, start=1):
-        try:
-            raw = page.extract_text() or ""
-        except Exception:  # noqa: BLE001 - one broken page must not kill the book
-            raw = ""
-        pages.append(PdfPage(number=number, text=clean_text(raw)))
+    failed_pages: list[int] = []
+    try:
+        for number, page in enumerate(reader.pages, start=1):
+            try:
+                raw = page.extract_text() or ""
+            except Exception:  # noqa: BLE001 - one broken page must not kill the book
+                failed_pages.append(number)
+                raw = ""
+            pages.append(PdfPage(number=number, text=clean_text(raw)))
+    except Exception as exc:  # noqa: BLE001 - malformed page trees fail during iteration
+        raise PDFError(f"PDF 页结构损坏，无法读取：{file.name}。请用 PDF 阅读器重新导出后再导入。") from exc
 
     if not any(not page.is_empty for page in pages):
+        if failed_pages:
+            raise PDFError(
+                f"PDF 文字解析失败：{file.name}（{len(failed_pages)} 页提取异常）。"
+                "请用 PDF 阅读器重新导出，或运行 OCR 后再导入。"
+            )
         raise PDFError(
             f"no selectable text found in {file.name}. "
             "It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again."
@@ -159,4 +172,11 @@ def read_pdf(path: str | Path) -> PdfDocument:
     title = repair_surrogates(str(metadata.get("/Title") or "")).strip()
     author = repair_surrogates(str(metadata.get("/Author") or "")).strip()
 
-    return PdfDocument(path=file, pages=pages, title=title, author=author)
+    warnings = []
+    if failed_pages:
+        numbers = "、".join(map(str, failed_pages[:20]))
+        warnings.append(
+            f"部分页面解析失败（共 {len(failed_pages)} 页）：{numbers}。"
+            "这些页面未参与检索，请重新导出或 OCR 后导入。"
+        )
+    return PdfDocument(path=file, pages=pages, title=title, author=author, warnings=warnings)

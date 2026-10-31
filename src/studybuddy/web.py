@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import binascii
 import difflib
+import hashlib
 import ipaddress
 import json
 import re
@@ -153,7 +154,9 @@ class WebApp:
     @property
     def llm_ready(self) -> bool:
         key = getattr(self.buddy.llm, "api_key", "")
-        return bool(key) and key != "not-needed"
+        base = urlparse(getattr(self.buddy.llm, "base_url", ""))
+        local = base.scheme in ("http", "https") and _host_allowed(base.netloc)
+        return local or (bool(key) and key != "not-needed")
 
     @property
     def web_provider(self) -> str:
@@ -336,14 +339,21 @@ class WebApp:
         upload_dir = (Path(self.buddy.root) / "uploads").resolve()
         try:
             upload_dir.mkdir(parents=True, exist_ok=True)
+            # Identical uploads share a source; different contents never overwrite it.
+            digest = hashlib.sha256(name.encode("utf-8") + b"\0" + raw).hexdigest()
+            attempt_dir = upload_dir / digest
+            attempt_dir.mkdir(exist_ok=True)
         except OSError as exc:
             raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
-        temporary = (upload_dir / name).resolve()
-        if not temporary.is_relative_to(upload_dir):
-            raise StudyErrorBadRequest("文件名不合法（不允许包含路径分隔符）")
+        temporary = attempt_dir / name
+        created = not temporary.exists()
         try:
-            temporary.write_bytes(raw)
+            if created:
+                temporary.write_bytes(raw)
         except OSError as exc:
+            if created:
+                temporary.unlink(missing_ok=True)
+                attempt_dir.rmdir()
             raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
 
         try:
@@ -354,7 +364,9 @@ class WebApp:
                     title=str(payload.get("title") or "") or None,
                 )
         except Exception:
-            temporary.unlink(missing_ok=True)
+            if created:
+                temporary.unlink(missing_ok=True)
+                attempt_dir.rmdir()
             raise
         return {"book": book.to_dict()}
 
@@ -378,6 +390,20 @@ class WebApp:
         for field in ("model", "base_url", "api_key"):
             if field in payload and not isinstance(payload[field], str):
                 raise StudyErrorBadRequest(f"{field} 必须是字符串")
+
+        if "model" in payload and not payload["model"].strip():
+            raise StudyErrorBadRequest("请填写服务商提供的模型 ID")
+        if "base_url" in payload:
+            parsed = urlparse(payload["base_url"].strip())
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.hostname
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise StudyErrorBadRequest("请输入有效的 HTTP(S) API 基础地址，不含查询参数")
+            if parsed.path.rstrip("/").endswith("/chat/completions"):
+                raise StudyErrorBadRequest("请删除地址末尾的 /chat/completions，只填写 API 基础地址")
 
         if str(payload.get("model", "")).strip():
             self.buddy.model = str(payload["model"]).strip()

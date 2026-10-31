@@ -51,10 +51,13 @@ def _default_root() -> str:
     env = os.environ.get("STUDYBUDDY_ROOT")
     if env:
         return env
-    if getattr(sys, "frozen", False):
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-        return str(Path(base) / "studybuddy")
-    return ".studybuddy"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or Path.home())
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return str(base / "studybuddy")
 
 
 def _parse_size(value: str) -> tuple[int, int]:
@@ -95,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--root",
         default=_default_root(),
-        help="数据目录，默认 .studybuddy（也可用 STUDYBUDDY_ROOT 设置）",
+        help="数据目录，默认用户应用数据目录（也可用 STUDYBUDDY_ROOT 设置）",
     )
     parser.add_argument("-m", "--model", default=os.environ.get("STUDYBUDDY_MODEL", "gpt-4o-mini"))
     parser.add_argument("-b", "--base-url", default=os.environ.get("STUDYBUDDY_BASE_URL"))

@@ -11,9 +11,19 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: windows exe
-    runs-on: windows-latest
+  desktop:
+    name: desktop / ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: macos-15
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,30 +38,44 @@ jobs:
           python -m pip install -e ".[build]"
 
       - name: Self-check from source
-        run: python -m studybuddy --root "$env:TEMP\sb-smoke" desktop --check
+        run: python -m studybuddy desktop --check
 
       - name: Build
         run: pyinstaller packaging/studybuddy-desktop.spec --noconfirm --distpath dist --workpath build
 
-      - name: Smoke test the binary
+      - name: Smoke test the Windows binary
+        if: runner.os == 'Windows'
         # A windowed exe does not block the shell, so Start-Process -Wait is required.
         run: |
-          $p = Start-Process -FilePath "dist\StudyBuddy\StudyBuddy.exe" -ArgumentList "--check" -Wait -PassThru `
+          $exe = (Resolve-Path "dist\StudyBuddy\StudyBuddy.exe").Path
+          $p = Start-Process -FilePath $exe -WorkingDirectory $env:TEMP -ArgumentList "--check" -Wait -PassThru `
                -RedirectStandardOutput check.log -RedirectStandardError check.err
           Get-Content check.log, check.err -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { Write-Error "自检失败，退出码 $($p.ExitCode)"; exit 1 }
 
-      - name: Package
+      - name: Smoke test the macOS app outside the checkout
+        if: runner.os == 'macOS'
+        run: |
+          executable="$PWD/dist/StudyBuddy.app/Contents/MacOS/StudyBuddy"
+          cd "$RUNNER_TEMP"
+          "$executable" --check
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
         # Onedir distribution: ship the whole folder, not a single file.
-        run: Compress-Archive -Path dist\StudyBuddy\* -DestinationPath dist\StudyBuddy-windows.zip -Force
+        run: Compress-Archive -Path dist\StudyBuddy\* -DestinationPath dist\StudyBuddy-${{ matrix.platform }}.zip -Force
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/StudyBuddy.app dist/StudyBuddy-${{ matrix.platform }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: StudyBuddy-windows
-          path: dist/StudyBuddy-windows.zip
+          name: StudyBuddy-${{ matrix.platform }}
+          path: dist/StudyBuddy-${{ matrix.platform }}.zip
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/StudyBuddy-windows.zip
+          files: dist/StudyBuddy-${{ matrix.platform }}.zip

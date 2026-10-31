@@ -19,12 +19,14 @@ stray process listening on a port.
 
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 from collections.abc import Sequence
@@ -127,7 +129,7 @@ def find_chromium() -> str | None:
     """
     override = os.environ.get("STUDYBUDDY_BROWSER", "").strip()
     if override:
-        return override if Path(override).exists() else None
+        return override if Path(override).is_file() else None
 
     if sys.platform == "win32":
         for candidate in _WINDOWS_BROWSERS:
@@ -135,8 +137,9 @@ def find_chromium() -> str | None:
                 return candidate
     elif sys.platform == "darwin":
         for candidate in _MACOS_BROWSERS:
-            if Path(candidate).is_file():
-                return candidate
+            for location in (Path(candidate), Path.home() / candidate.lstrip("/")):
+                if location.is_file():
+                    return str(location)
     else:
         for name in _LINUX_BROWSERS:
             found = shutil.which(name)
@@ -308,6 +311,26 @@ def _check(buddy: StudyBuddy, app: DesktopApp) -> int:
     try:
         with urllib.request.urlopen(f"{app.url}/api/state", timeout=10) as response:
             payload: dict[str, Any] = json.loads(response.read().decode("utf-8"))
+        sample = Path(__file__).parent / "zh_sample.pdf"
+        if not sample.exists() and not getattr(sys, "frozen", False):
+            sample = Path(__file__).parents[2] / "tests" / "fixtures" / "zh_sample.pdf"
+        if sample.exists() or getattr(sys, "frozen", False):
+            with tempfile.TemporaryDirectory(prefix="studybuddy-check-") as temporary:
+                probe = StudyBuddy(root=temporary)
+                # Import verification is offline even if embedding settings are present.
+                probe.ensure_embedder = lambda: None  # type: ignore[method-assign]
+                with DesktopApp(probe) as isolated:
+                    request = urllib.request.Request(
+                        isolated.url + "/api/add-book",
+                        data=json.dumps(
+                            {"name": "中文教材.pdf", "data": base64.b64encode(sample.read_bytes()).decode()}
+                        ).encode(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        imported = json.loads(response.read())
+                    if imported["book"]["chunks"] < 1:
+                        raise StudyError("PDF 自检未提取到文本")
     except Exception as exc:  # noqa: BLE001
         print(f"自检失败: {exc}", file=sys.stderr)
         return 1
