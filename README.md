@@ -176,7 +176,7 @@ CI 在 **macOS、Windows、Linux** 三种系统上真跑测试（不只是 Linux
 代码里没有平台分支：路径全部用 `pathlib`，不调用外部命令。唯一需要留意的是终端编码——
 输出被重定向时（管道、CI、写文件）会自动切到 UTF-8，避免 Windows 默认代码页把中文打断。
 
-数据目录默认是**当前目录下的 `.studybuddy/`**，三个系统一致。可以改成绝对路径：
+CLI 与桌面版默认使用当前用户的应用数据目录，启动位置变化不会新建空书库。各系统路径见文末“换电脑与首次使用”。可以显式改成绝对路径：
 
 ```powershell
 # Windows
@@ -234,7 +234,7 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 - **书库**：导入 PDF（拖拽或选择文件）、按书一键「出题」「提纲」
 - **记忆**：画像、薄弱点、跟进话题、今天该复习什么，可一键「记住了/没记住」调整间隔重复
 - **设置**：内置 DeepSeek / OpenAI / 本地 Ollama 预设，一键填好模型与端点。
-  模型和接口地址会记在 `.studybuddy/ui-config.json`；**API Key 只存在进程内存里，不写磁盘**，
+  模型和接口地址会记在数据目录内的 `ui-config.json`；**API Key 只存在进程内存里，不写磁盘**，
   重启需要重填（这是有意的）
 
 ### 安全边界
@@ -461,7 +461,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 └── memory.json    # 画像、事实、历史、话题
 ```
 
-默认在运行目录下，用 `--root` 或环境变量 `STUDYBUDDY_ROOT` 换位置：
+CLI 默认保存在用户应用数据目录；Python API 的 `StudyBuddy()` 仍默认使用 `.studybuddy/`。用 `--root` 或环境变量 `STUDYBUDDY_ROOT` 指定 CLI 数据位置：
 
 ```bash
 export STUDYBUDDY_ROOT="$HOME/Documents/studybuddy-data/library"
