@@ -7,6 +7,7 @@ common case, and every answer ends with the pages it came from.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .errors import StudyError
+from .errors import AgentError, StudyError
 from .study import StudyBuddy
 
 DIM = "\033[2m"
@@ -295,18 +296,14 @@ def _cmd_add_text(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     if not file.exists():
         print(f"找不到文件: {file}", file=sys.stderr)
         return 1
-    try:
-        pages = _read_pages(file)
-        book = buddy.add_document(
-            title=args.title,
-            pages=pages,
-            course=args.course,
-            source=str(file),
-            on_progress=lambda message: print(_style(f"  {message}", DIM)),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"导入失败: {exc}", file=sys.stderr)
-        return 1
+    pages = _read_pages(file)
+    book = buddy.add_document(
+        title=args.title,
+        pages=pages,
+        course=args.course,
+        source=str(file),
+        on_progress=lambda message: print(_style(f"  {message}", DIM)),
+    )
     print(f"✓ {book.title}  {book.pages} 页, {book.chunks} 个片段  id={book.id}")
     if buddy.embedding_error:
         print(_style(f"  向量索引失败（{buddy.embedding_error}）", YELLOW), file=sys.stderr)
@@ -315,13 +312,11 @@ def _cmd_add_text(buddy: StudyBuddy, args: argparse.Namespace) -> int:
 
 def _cmd_books(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     books = buddy.library.books
+    if args.json:
+        print(json.dumps([book.to_dict() for book in books], ensure_ascii=False, indent=2))
+        return 0
     if not books:
         print("书库是空的。先运行: studybuddy add 你的教材.pdf --course 高等数学")
-        return 0
-    if args.json:
-        import json
-
-        print(json.dumps([book.to_dict() for book in books], ensure_ascii=False, indent=2))
         return 0
     for index, book in enumerate(books, start=1):
         course = f" [{book.course}]" if book.course else ""
@@ -354,19 +349,31 @@ def _cmd_review(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     return 0
 
 
+def _warn_if_memory_unsaved(memory: Any) -> int | None:
+    """Turn a failed memory write into an honest message and a storage exit code."""
+    error = getattr(memory, "last_save_error", None)
+    if not error:
+        return None
+    print(f"错误: 记忆没有写入磁盘（{error}）。", file=sys.stderr)
+    print("提示: 检查数据目录写权限，或用 --root / STUDYBUDDY_ROOT 换一个可写目录。", file=sys.stderr)
+    return 3
+
+
 def _cmd_memory(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     memory = buddy.memory
     if args.clear:
         memory.facts.clear()
         memory.episodes.clear()
         memory.topics.clear()
-        memory.save()
+        if not memory.save():
+            return _warn_if_memory_unsaved(memory) or 3
         print("已清空记忆（画像保留）。")
         return 0
     if args.forget:
         removed = memory.remove_fact(args.forget)
         print("已删除。" if removed else f"没有编号为 {args.forget} 的记忆。")
-        return 0
+        failed = _warn_if_memory_unsaved(memory) if removed else None
+        return failed or 0
 
     print(memory.digest())
     return 0
@@ -390,7 +397,8 @@ def _cmd_profile(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     )
     print("已保存画像:")
     print(profile.summary())
-    return 0
+    failed = _warn_if_memory_unsaved(buddy.memory)
+    return failed or 0
 
 
 def _cmd_doctor(buddy: StudyBuddy, _args: argparse.Namespace) -> int:
@@ -496,7 +504,17 @@ def main(argv: list[str] | None = None) -> int:
             embedding_base_url=args.embed_base_url,
             embedding_provider=None if args.embed_provider == "auto" else args.embed_provider,
         )
-    except Exception as exc:  # noqa: BLE001
+    except AgentError as exc:
+        print(f"初始化失败: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"初始化失败: {exc}", file=sys.stderr)
+        print(
+            f"提示: 数据目录不可用，用 --root 或 STUDYBUDDY_ROOT 指定一个可写目录（当前: {args.root}）",
+            file=sys.stderr,
+        )
+        return 3
+    except Exception as exc:  # noqa: BLE001 - unknown init failure, keep the exit code stable
         print(f"初始化失败: {exc}", file=sys.stderr)
         return 1
 
@@ -607,9 +625,19 @@ def main(argv: list[str] | None = None) -> int:
 
         parser.print_help()
         return 0
-    except StudyError as exc:
+    except AgentError as exc:
+        # Expected, actionable failures (bad key, empty library, unknown book...).
+        # They must never surface as a Python traceback: the user needs the next
+        # command to run, not a stack frame.
         print(f"错误: {exc}", file=sys.stderr)
-        return 1
+        return 2
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.EADDRINUSE:
+            print(f"错误: 端口已被占用（{exc}）", file=sys.stderr)
+            print("提示: 换一个端口，例如 studybuddy ui --port 8766", file=sys.stderr)
+        else:
+            print(f"错误: {exc}", file=sys.stderr)
+        return 3
     except KeyboardInterrupt:
         return 130
 

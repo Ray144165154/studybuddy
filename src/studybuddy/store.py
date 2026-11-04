@@ -46,6 +46,36 @@ def slugify(text: str) -> str:
     return cleaned or "book"
 
 
+class LibraryConflict(LibraryError):
+    """Another process changed the library between our load and our save."""
+
+
+# Bytes that never appear in extracted textbook text but do appear at the head of
+# the files people mistakenly feed to ``add-text`` (a PDF or an EPUB/Office zip).
+_BINARY_MAGIC = (
+    b"%PDF-",
+    b"PK\x03\x04",  # docx/epub/zip
+    b"\x89PNG\r\n\x1a\n",
+    b"GIF87a",
+    b"GIF89a",
+    b"\xff\xd8\xff",  # jpeg
+)
+
+
+def _looks_like_binary(text: str) -> bool:
+    """True when "page text" is actually raw bytes that were decoded by mistake.
+
+    ``add-text`` reads with ``errors="replace"``, so a PDF passed there decodes to
+    mostly U+FFFD and would otherwise be indexed as dozens of garbage chunks. That
+    silently pollutes retrieval instead of failing where the user could see it.
+    """
+    head = text.lstrip()[:8]
+    raw = head.encode("utf-8", "replace")
+    if any(raw.startswith(magic) for magic in _BINARY_MAGIC):
+        return True
+    return "\x00" in text
+
+
 class Library:
     """A collection of ingested textbooks with lexical search across all of them."""
 
@@ -57,6 +87,7 @@ class Library:
         self.embeddings: EmbeddingIndex | None = None
         self._bm25: BM25 | None = None
         self._chunk_by_id: dict[str, Chunk] | None = None
+        self._stamp: tuple[tuple[int, int] | None, tuple[int, int] | None] | None = None
         self.load()
 
     # -- persistence ---------------------------------------------------------------
@@ -76,6 +107,28 @@ class Library:
     def _invalidate(self) -> None:
         self._bm25 = None
         self._chunk_by_id = None
+
+    def _disk_stamp(self) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+        """Identity of the on-disk library, used to notice concurrent writers.
+
+        The UI keeps a Library in memory for hours while the CLI is a separate
+        process. Without this check the UI's next ``save()`` would rewrite both
+        files from its stale snapshot and silently delete books the CLI added.
+        """
+
+        def stat(path: Path) -> tuple[int, int] | None:
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                return None
+            return (info.st_mtime_ns, info.st_size)
+
+        return (stat(self.state_path), stat(self.chunks_path))
+
+    def _refresh_if_stale(self) -> None:
+        """Reload from disk when another process wrote since we last read."""
+        if self._stamp is not None and self._disk_stamp() != self._stamp:
+            self.load()
 
     def load(self) -> None:
         self.books = []
@@ -98,14 +151,23 @@ class Library:
                         self.chunks.append(Chunk.from_dict(json.loads(line)))
 
         self.embeddings = EmbeddingIndex.load(self.embeddings_path)
+        self._stamp = self._disk_stamp()
 
     def save(self) -> None:
+        current = self._disk_stamp()
+        if self._stamp is not None and current != self._stamp:
+            # Between our load and this save another process (usually the CLI)
+            # rewrote the library. Writing our snapshot now would drop its books.
+            raise LibraryConflict(
+                "书库已被另一个进程修改（例如终端里的 studybuddy add），为避免覆盖已刷新后重试"
+            )
         payload = {"version": _FORMAT_VERSION, "books": [book.to_dict() for book in self.books]}
         self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
         with self.chunks_path.open("w", encoding="utf-8") as handle:
             for chunk in self.chunks:
                 handle.write(json.dumps(chunk.to_dict(), ensure_ascii=False) + "\n")
         self._invalidate()
+        self._stamp = self._disk_stamp()
 
     # -- ingest --------------------------------------------------------------------
 
@@ -126,9 +188,16 @@ class Library:
         This is the entry point for anything that is not a text-layer PDF: an OCR
         pipeline, an EPUB conversion, or notes pasted from a lecture.
         """
+        self._refresh_if_stale()
         page_list = [(int(number), clean_text(text)) for number, text in pages]
         if not any(text.strip() for _number, text in page_list):
             raise LibraryError("没有可索引的文字内容（这份文档可能是扫描件，需要先做 OCR）")
+        if any(_looks_like_binary(text) for _number, text in page_list):
+            raise LibraryError(
+                "这看起来是二进制文件（PDF / EPUB / 图片），不是抽取好的文本："
+                "有文字层的 PDF 请用 `studybuddy add` 导入；扫描件先 OCR，"
+                "再用 `add-text` 导入 OCR 输出的 JSONL 或 TXT。"
+            )
 
         book_title = (title or source or "untitled").strip()
         if book_id is None:
@@ -192,6 +261,8 @@ class Library:
         )
 
     def remove_book(self, reference: str) -> Book:
+        # Pick up books another process added before rewriting the whole index.
+        self._refresh_if_stale()
         book = self.get_book(reference)
         self.books = [existing for existing in self.books if existing.id != book.id]
         self.chunks = [chunk for chunk in self.chunks if chunk.book_id != book.id]
@@ -391,8 +462,14 @@ class Library:
             allowed = None
             allowed_chunk_ids = None
 
-        # Ask for more than we need, then thin out per-book duplicates.
-        candidate_k = min(max(top_k * max(per_book_cap, 1) * 2, top_k, 20), 200)
+        # Ask for more than we need, then thin out per-book duplicates. The window
+        # has to grow with the number of books in scope: a thick book can own the
+        # first hundred lexical hits, and a fixed window would leave the other
+        # books with no candidate at all (``top_k`` silently under-filled).
+        candidate_k = min(
+            max(top_k * max(per_book_cap, 1) * 2 * max(scope, 1), top_k, 20),
+            len(self.chunks),
+        )
         lexical = self.index.top_k(query, k=candidate_k, allowed=allowed, min_score=min_score)
         lexical_ids = [self.chunks[position].id for position, _score in lexical]
 

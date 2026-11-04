@@ -6,6 +6,8 @@ parts (argv building, browser lookup) plus the server they point at.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -19,6 +21,7 @@ from studybuddy import Book, Chunk, Library, Memory, StudyBuddy
 from studybuddy.cli import _default_root, _parse_size
 from studybuddy.desktop import (
     DesktopApp,
+    _client_url,
     app_window_command,
     default_argv,
     find_chromium,
@@ -149,9 +152,39 @@ class TestRunDesktop(DesktopTestCase):
     def test_check_mode_returns_zero(self) -> None:
         self.assertEqual(run_desktop(self.buddy(), port=0, check=True), 0)
 
+    def test_check_mode_works_on_a_wildcard_bind_host(self) -> None:
+        # 0.0.0.0 is a bind address, not a connect address: the self-check has to
+        # reach the server through loopback or it gets its own 403 host rejection.
+        with patch.dict(os.environ, {"no_proxy": "127.0.0.1,localhost", "NO_PROXY": "127.0.0.1,localhost"}):
+            self.assertEqual(run_desktop(self.buddy(), host="0.0.0.0", port=0, check=True), 0)
+
     def test_unknown_native_mode_is_rejected(self) -> None:
         with self.assertRaises(StudyError):
             run_desktop(self.buddy(), port=0, native="telepathy")
+
+    def test_wildcard_bind_opens_the_window_on_loopback(self) -> None:
+        opened: list[str] = []
+        out = io.StringIO()
+
+        def capture(url: str, **_: object) -> bool:
+            opened.append(url)
+            return True
+
+        with (
+            patch("studybuddy.desktop._open_native_window", side_effect=capture),
+            contextlib.redirect_stdout(out),
+        ):
+            self.assertEqual(run_desktop(self.buddy(), host="0.0.0.0", port=0), 0)
+        self.assertTrue(opened)
+        self.assertTrue(opened[0].startswith("http://127.0.0.1:"), opened[0])
+        self.assertIn(opened[0], out.getvalue())
+
+
+class TestCheckClientUrl(unittest.TestCase):
+    def test_wildcard_bind_host_is_replaced_with_loopback(self) -> None:
+        self.assertEqual(_client_url("http://0.0.0.0:8765"), "http://127.0.0.1:8765")
+        self.assertEqual(_client_url("http://[::]:8765"), "http://127.0.0.1:8765")
+        self.assertEqual(_client_url("http://127.0.0.1:8765"), "http://127.0.0.1:8765")
 
 
 class TestCliHelpers(unittest.TestCase):

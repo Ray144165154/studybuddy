@@ -35,6 +35,11 @@ _API_KEY_ENV_VARS = ("STUDYBUDDY_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
 
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
+# A provider (or a captive portal in front of it) can return a huge error body;
+# keep only what is useful for the message and the logs.
+_MAX_ERROR_BODY = 64 * 1024
+_MALFORMED_RESPONSE = "模型返回了无法解析的响应"
+
 
 def _resolve_api_key(explicit: str | None) -> str:
     if explicit:
@@ -185,7 +190,7 @@ class LLM:
 
     def _error_from(self, exc: urllib.error.HTTPError) -> LLMError:
         try:
-            body = exc.read().decode("utf-8", "replace")
+            body = exc.read(_MAX_ERROR_BODY).decode("utf-8", "replace")
         except Exception:
             body = ""
         message = f"HTTP {exc.code} from {self.base_url}"
@@ -235,8 +240,16 @@ class LLM:
 
         def call() -> dict[str, Any]:
             with self._open(payload, stream=False) as response:
-                parsed: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-                return parsed
+                raw = response.read()
+            try:
+                parsed: Any = json.loads(raw.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise LLMError(f"{_MALFORMED_RESPONSE}（响应不是 UTF-8 文本）") from exc
+            except json.JSONDecodeError as exc:
+                raise LLMError(f"{_MALFORMED_RESPONSE}（不是合法的 JSON）") from exc
+            if not isinstance(parsed, dict):
+                raise LLMError(f"{_MALFORMED_RESPONSE}（JSON 顶层不是对象）")
+            return parsed
 
         data = self._with_retries(call)
         return self._parse(data)
@@ -252,25 +265,43 @@ class LLM:
     @staticmethod
     def _parse_usage(raw: dict[str, Any] | None) -> Usage:
         raw = raw or {}
+        if not isinstance(raw, dict):
+            raise LLMError(f"{_MALFORMED_RESPONSE}（usage 不是对象）")
+        values: dict[str, int] = {}
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            try:
+                values[field] = int(raw.get(field) or 0)
+            except (TypeError, ValueError) as exc:
+                raise LLMError(f"{_MALFORMED_RESPONSE}（usage.{field} 不是整数）") from exc
         usage = Usage(
-            prompt_tokens=int(raw.get("prompt_tokens") or 0),
-            completion_tokens=int(raw.get("completion_tokens") or 0),
-            total_tokens=int(raw.get("total_tokens") or 0),
+            prompt_tokens=values["prompt_tokens"],
+            completion_tokens=values["completion_tokens"],
+            total_tokens=values["total_tokens"],
         )
         if not usage.total_tokens:
             usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
         return usage
 
     def _parse(self, data: dict[str, Any]) -> LLMResponse:
-        try:
-            choice = data["choices"][0]
-        except (KeyError, IndexError) as exc:
-            raise LLMError(f"malformed response: {data!r}"[:500]) from exc
-
-        message = choice.get("message") or {}
-        tool_calls = [ToolCall.from_openai(item) for item in message.get("tool_calls") or []]
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise LLMError(f"{_MALFORMED_RESPONSE}（choices 缺失或格式错误）")
+        message = choices[0].get("message") or {}
+        if not isinstance(message, dict):
+            raise LLMError(f"{_MALFORMED_RESPONSE}（message 不是对象）")
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise LLMError(f"{_MALFORMED_RESPONSE}（message.content 不是字符串）")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise LLMError(f"{_MALFORMED_RESPONSE}（tool_calls 不是数组）")
+        tool_calls: list[ToolCall] = []
+        for item in raw_calls:
+            if not isinstance(item, dict):
+                raise LLMError(f"{_MALFORMED_RESPONSE}（tool_calls 条目不是对象）")
+            tool_calls.append(ToolCall.from_openai(item))
         return LLMResponse(
-            text=message.get("content"),
+            text=content,
             tool_calls=tool_calls,
             usage=self._parse_usage(data.get("usage")),
             model=data.get("model"),

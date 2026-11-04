@@ -22,8 +22,13 @@ class LLMError(AgentError):
         self.body = body
 
 
-class RetryExhausted(AgentError):
-    """Every retry attempt failed."""
+class RetryExhausted(LLMError):
+    """Every retry attempt failed.
+
+    Inherits :class:`LLMError` so callers that map "the provider is broken" to a
+    specific status (the web UI returns 502) treat a give-up the same way as a
+    single failed call. Retrying already proved it is not a user mistake.
+    """
 
     def __init__(self, attempts: int, last_error: Exception) -> None:
         super().__init__(f"gave up after {attempts} attempt(s): {last_error}")

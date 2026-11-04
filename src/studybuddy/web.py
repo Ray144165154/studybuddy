@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from . import config as saved_config
 from .errors import AgentError, LLMError, StudyError
+from .pdf import repair_surrogates
 from .study import StudyBuddy
 
 __all__ = ["WebApp", "serve"]
@@ -51,7 +52,13 @@ _MAX_BODY_BYTES = 2 * 1024 * 1024
 _MAX_UPLOAD_BODY_BYTES = 4 * ((_MAX_UPLOAD_BYTES + 2) // 3) + 64 * 1024
 _MAX_QUESTION_CHARS = 8000
 _LOOPBACK_NAMES = {"localhost"}
+_WILDCARD_BINDS = {"0.0.0.0", "::"}
 _UI_CONFIG_FILE = "ui-config.json"
+_SHUTTING_DOWN = "服务正在关闭，请稍后重新启动 studybuddy"
+_STORAGE_ERROR = (
+    "数据目录写入失败，无法完成操作：{reason}。"
+    "请检查数据目录的写权限和磁盘空间，或用 --root 指定一个可写目录。"
+)
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -88,6 +95,16 @@ def _origin_allowed(origin: str) -> bool:
     return parsed.scheme in ("http", "https") and _host_allowed(parsed.netloc)
 
 
+def _browser_url(host: str, port: int) -> str:
+    """The URL to print/open: a wildcard bind address is not a connect address.
+
+    The server still listens on ``0.0.0.0``/``::``, but only loopback Host values
+    are accepted (see :func:`_host_allowed`), so the browser must use ``127.0.0.1``.
+    """
+    client_host = "127.0.0.1" if host in _WILDCARD_BINDS else host
+    return f"http://{client_host}:{port}"
+
+
 _CHAPTER = re.compile(r"^第\s*([0-9]+)\s*[章节]")
 _CN_CHAPTER = re.compile(r"^第\s*[一二三四五六七八九十百零〇]+\s*[章节]")
 _NUMBERED = re.compile(r"^(\d{1,2})(?:\.\d{1,2})*\s")
@@ -111,6 +128,28 @@ def _int_param(value: Any, field: str, *, low: int, high: int) -> int:
     return max(low, min(parsed, high))
 
 
+def _json_safe(value: Any) -> Any:
+    """Repair unpaired surrogates so a model reply can always be encoded as UTF-8."""
+    if isinstance(value, str):
+        return repair_surrogates(value)
+    if isinstance(value, dict):
+        return {_json_safe(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _encode_json(payload: dict[str, Any]) -> bytes:
+    """Serialize a response; a lone surrogate from a provider must never drop the reply."""
+    safe = _json_safe(payload)
+    document = json.dumps(safe, ensure_ascii=False)
+    try:
+        return document.encode("utf-8")
+    except UnicodeEncodeError:  # pragma: no cover - repair_surrogates should prevent this
+        # Last resort: pure-ASCII \uXXXX escapes are always representable.
+        return json.dumps(safe, ensure_ascii=True).encode("ascii")
+
+
 class WebApp:
     """The API surface the single page app talks to.
 
@@ -124,6 +163,7 @@ class WebApp:
         self._memory_executor = ThreadPoolExecutor(max_workers=1) if background_memory else None
         self._memory_slots = threading.BoundedSemaphore(8)
         self._memory_generation = 0
+        self._closed = False
         self.restore_config()
 
     # -- persisted (non-secret) settings -------------------------------------------
@@ -271,7 +311,9 @@ class WebApp:
                 persist_memory=self._memory_executor is None,
             )
             if remember and self._memory_executor is not None:
-                if self._memory_slots.acquire(blocking=False):
+                if self._closed:
+                    answer.warnings.append("应用正在关闭，本次学习记忆未保存")
+                elif self._memory_slots.acquire(blocking=False):
                     snapshot = copy(self.buddy)
                     snapshot.llm = copy(self.buddy.llm)
                     generation = self._memory_generation
@@ -288,7 +330,13 @@ class WebApp:
                         finally:
                             self._memory_slots.release()
 
-                    self._memory_executor.submit(update_memory)
+                    try:
+                        self._memory_executor.submit(update_memory)
+                    except RuntimeError:
+                        # close() shut the executor down between the check and the
+                        # submit; the answer is still valid, only memory is skipped.
+                        self._memory_slots.release()
+                        answer.warnings.append("应用正在关闭，本次学习记忆未保存")
                 else:
                     answer.warnings.append("记忆任务繁忙，本次未保存学习记忆")
 
@@ -337,24 +385,23 @@ class WebApp:
             raise StudyErrorBadRequest("文件太大（上限 80MB）")
 
         upload_dir = (Path(self.buddy.root) / "uploads").resolve()
-        try:
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            # Identical uploads share a source; different contents never overwrite it.
-            digest = hashlib.sha256(name.encode("utf-8") + b"\0" + raw).hexdigest()
-            attempt_dir = upload_dir / digest
-            attempt_dir.mkdir(exist_ok=True)
-        except OSError as exc:
-            raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        # Identical uploads share a source; different contents never overwrite it.
+        digest = hashlib.sha256(name.encode("utf-8") + b"\0" + raw).hexdigest()
+        attempt_dir = upload_dir / digest
+        attempt_dir.mkdir(exist_ok=True)
         temporary = attempt_dir / name
         created = not temporary.exists()
         try:
             if created:
                 temporary.write_bytes(raw)
-        except OSError as exc:
+        except OSError:
+            # Let the OSError reach the dispatcher: it becomes an actionable 409
+            # ("data directory is not writable") instead of a generic 500.
             if created:
                 temporary.unlink(missing_ok=True)
                 attempt_dir.rmdir()
-            raise StudyError(f"数据目录不可写，无法保存上传的文件：{exc}") from exc
+            raise
 
         try:
             with self._lock:
@@ -419,18 +466,28 @@ class WebApp:
         return {"ok": True, "llm_ready": self.llm_ready, "model": self.buddy.model}
 
     def close(self) -> None:
-        """Finish queued memory work before closing the application."""
+        """Refuse new work and finish queued memory writes before closing the app."""
+        self._closed = True
         if self._memory_executor is not None:
             self._memory_executor.shutdown(wait=True)
 
     def clear_memory(self) -> dict[str, Any]:
         with self._lock:
-            self._memory_generation += 1
             memory = self.buddy.memory
-            memory.facts.clear()
-            memory.episodes.clear()
-            memory.topics.clear()
-            memory.save()
+            facts, episodes, topics = memory.facts, memory.episodes, memory.topics
+            generation = self._memory_generation
+            self._memory_generation += 1
+            memory.facts = []
+            memory.episodes = []
+            memory.topics = {}
+            if not memory.save():
+                # Keep memory and disk in agreement: a failed clear must not leave the
+                # UI showing "empty" while the next launch restores everything.
+                memory.facts = facts
+                memory.episodes = episodes
+                memory.topics = topics
+                self._memory_generation = generation
+                raise OSError(memory.last_save_error or "无法写入记忆文件")
         return {"ok": True}
 
     def update_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -494,6 +551,10 @@ class WebApp:
 
     # -- routing -------------------------------------------------------------------
 
+    def _is_closed(self) -> bool:
+        """Read the shutdown flag without letting the type checker narrow it away."""
+        return self._closed
+
     def dispatch(
         self,
         method: str,
@@ -501,7 +562,11 @@ class WebApp:
         payload: dict[str, Any] | None,
         query: dict[str, list[str]],
     ) -> tuple[int, dict[str, Any]]:
+        if self._is_closed():
+            return 503, {"error": _SHUTTING_DOWN}
         with self._lock:
+            if self._is_closed():
+                return 503, {"error": _SHUTTING_DOWN}
             return self._dispatch(method, path, payload, query)
 
     def _dispatch(
@@ -551,6 +616,10 @@ class WebApp:
         except AgentError as exc:
             # PDFError / LibraryError / StudyError: the user's input or data is at fault.
             return 400, {"error": str(exc)}
+        except OSError as exc:
+            # A read-only volume, a full disk or a too-long upload filename: the
+            # environment is at fault, and the user needs a way to act on it.
+            return 409, {"error": _STORAGE_ERROR.format(reason=exc)}
         except Exception:  # noqa: BLE001 - never leak internals to the client
             # The client gets a generic message, so the detail must go somewhere:
             # the terminal that is running `studybuddy ui`.
@@ -573,7 +642,7 @@ class _Handler(BaseHTTPRequestHandler):
     # -- responses -----------------------------------------------------------------
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = _encode_json(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -719,15 +788,15 @@ def serve(
     open_browser: bool = True,
 ) -> None:
     """Run the UI until interrupted."""
-    server, app, url = make_server(buddy, host=host, port=port)
+    server, app, _ = make_server(buddy, host=host, port=port)
+    browser_url = _browser_url(host, server.server_address[1])
 
-    print(f"studybuddy {__version__}  →  {url}", flush=True)
+    print(f"studybuddy {__version__}  →  {browser_url}", flush=True)
     print(f"数据目录: {buddy.library.root}", flush=True)
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(
-            f"警告: 正在监听 {host}，局域网内其他设备可以访问这个界面。"
-            "它没有登录机制，请只在可信网络里这样做。",
+            f"警告: 正在监听 {host}；这次只改变监听地址，界面仍只接受本机访问，其他设备会被拒绝。",
             file=sys.stderr,
             flush=True,
         )
@@ -736,7 +805,7 @@ def serve(
     print("按 Ctrl-C 退出", flush=True)
 
     if open_browser:
-        threading.Timer(0.6, lambda: __import__("webbrowser").open(url)).start()
+        threading.Timer(0.6, lambda: __import__("webbrowser").open(browser_url)).start()
 
     try:
         server.serve_forever()

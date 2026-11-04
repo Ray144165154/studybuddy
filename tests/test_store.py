@@ -244,6 +244,50 @@ class TestAddDocument(unittest.TestCase):
         self.assertEqual(self.library.search("条目", top_k=3), [])
         self.assertTrue(self.library.search("条目", top_k=3, include_nav=True))
 
+    def test_add_document_rejects_a_pdf_smuggled_in_as_text(self) -> None:
+        with self.assertRaises(LibraryError) as caught:
+            self.library.add_document(title="误导入", pages=[(1, "%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj")])
+        self.assertIn("二进制", str(caught.exception))
+        self.assertEqual(self.library.books, [])
+
+    def test_add_document_rejects_nul_bytes(self) -> None:
+        with self.assertRaises(LibraryError):
+            self.library.add_document(title="坏文件", pages=[(1, "正常文字\x00后面是二进制")])
+
+    def test_a_stale_library_reloads_before_writing(self) -> None:
+        # An open UI keeps a Library in memory while the CLI writes to the same root.
+        root = self.library.root
+        stale = self.library
+        stale.add_document(title="A", pages=[(1, "导数的定义是增量之比的极限。")])
+
+        other = Library(root)
+        other.add_document(title="B", pages=[(1, "矩阵乘法不满足交换律。")])
+
+        # The stale instance must pick up B instead of overwriting it with its snapshot.
+        stale.add_document(title="C", pages=[(1, "条件概率的定义是 P(A|B)。")])
+        titles = sorted(book.title for book in Library(root).books)
+        self.assertEqual(titles, ["A", "B", "C"])
+        self.assertEqual(len(Library(root).chunks), len(stale.chunks))
+
+    def test_save_refuses_to_overwrite_a_concurrent_write(self) -> None:
+        root = self.library.root
+        stale = self.library
+        Library(root).add_document(title="B", pages=[(1, "矩阵乘法不满足交换律。")])
+        with self.assertRaises(LibraryError):
+            stale.save()
+        self.assertEqual([book.title for book in Library(root).books], ["B"])
+
+    def test_thick_book_does_not_starve_the_candidate_window(self) -> None:
+        thick = self.library
+        thick.add_document(title="厚书", pages=[(page, "导数的定义。" * 20) for page in range(1, 41)])
+        thick.add_document(title="薄书一", pages=[(1, "导数与微分的关系。")])
+        thick.add_document(title="薄书二", pages=[(1, "导数的几何意义。")])
+
+        hits = thick.search("导数", top_k=6, per_book_cap=3)
+        titles = {chunk.book_title for chunk, _score in hits}
+        self.assertEqual(len(hits), 5)  # 3 from the thick book + 1 each from the thin ones
+        self.assertEqual(titles, {"厚书", "薄书一", "薄书二"})
+
 
 if __name__ == "__main__":
     unittest.main()

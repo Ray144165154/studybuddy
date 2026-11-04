@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from studybuddy.cli import main
+from studybuddy.errors import LLMError
 from support import make_textbook
 
 
@@ -137,6 +138,17 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("已清空", out)
 
+    def test_memory_clear_does_not_claim_success_when_the_disk_refuses(self) -> None:
+        run("--root", self.root, "grade", "极限", "--correct")
+        memory_path = Path(self.root) / "memory.json"
+        self.assertTrue(memory_path.exists())
+        os.chmod(memory_path, 0o444)
+        self.addCleanup(os.chmod, memory_path, 0o644)
+        code, out, err = run("--root", self.root, "memory", "--clear")
+        self.assertEqual(code, 3)
+        self.assertNotIn("已清空", out)
+        self.assertIn("记忆没有写入磁盘", err)
+
     def test_memory_forget_unknown(self) -> None:
         code, out, _ = run("--root", self.root, "memory", "--forget", "f9999")
         self.assertEqual(code, 0)
@@ -144,7 +156,7 @@ class TestCli(unittest.TestCase):
 
     def test_ask_on_empty_library(self) -> None:
         code, _, err = run("--root", self.root, "-k", "test", "ask", "什么是导数")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("书库是空的", err)
 
     def test_remove(self) -> None:
@@ -159,13 +171,13 @@ class TestCli(unittest.TestCase):
         run("--root", self.root, "add", str(self.pdf))
         with patch.dict(os.environ, {"HOME": str(self.tmp), "USERPROFILE": str(self.tmp)}, clear=True):
             code, _, err = run("--root", self.root, "index")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("embedding", err)
 
     def test_index_on_empty_library(self) -> None:
         with patch.dict(os.environ, {"STUDYBUDDY_EMBED_MODEL": "fake-embed"}, clear=False):
             code, _, err = run("--root", self.root, "index")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("书库是空的", err)
 
     def test_stats_mentions_vectors(self) -> None:
@@ -204,13 +216,45 @@ class TestCli(unittest.TestCase):
         dump = self.tmp / "empty.jsonl"
         dump.write_text("", encoding="utf-8")
         code, _, err = run("--root", self.root, "add-text", str(dump), "-t", "空")
-        self.assertEqual(code, 1)
-        self.assertIn("失败", err)
+        self.assertEqual(code, 2)
+        self.assertIn("没有可索引", err)
+
+    def test_add_text_rejects_a_pdf_instead_of_indexing_garbage(self) -> None:
+        # The PDF is copied through `errors="replace"`, so without a guard it used to
+        # be indexed as dozens of U+FFFD chunks and the command still exited 0.
+        code, _, err = run("--root", self.root, "add-text", str(self.pdf), "-t", "误导入")
+        self.assertEqual(code, 2)
+        self.assertIn("二进制", err)
+        self.assertIn("studybuddy add", err)
+        _, out, _ = run("--root", self.root, "books", "--json")
+        self.assertEqual(json.loads(out), [])
+
+    def test_books_json_on_empty_library_is_valid_json(self) -> None:
+        code, out, _ = run("--root", self.root, "books", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [])
+
+    def test_llm_error_prints_a_message_not_a_traceback(self) -> None:
+        run("--root", self.root, "add", str(self.pdf))
+        with patch("studybuddy.llm.LLM.complete", side_effect=LLMError("HTTP 401: invalid api key")):
+            code, _, err = run("--root", self.root, "-k", "test", "ask", "导数的定义")
+        self.assertEqual(code, 2)
+        self.assertIn("错误:", err)
+        self.assertIn("HTTP 401", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_unusable_root_exits_three_with_a_hint(self) -> None:
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        code, _, err = run("--root", str(blocker / "data"), "books")
+        self.assertEqual(code, 3)
+        self.assertIn("提示", err)
+        self.assertIn("STUDYBUDDY_ROOT", err)
 
     def test_remove_unknown_book(self) -> None:
         run("--root", self.root, "add", str(self.pdf), "--title", "高等数学")
         code, _, err = run("--root", self.root, "remove", "物理")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("错误", err)
 
 

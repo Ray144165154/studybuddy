@@ -15,10 +15,13 @@
 - **教材内容是不可信输入。** 上传的 PDF 里可能含有诱导性文本（提示注入）。
   本工具只会把检索到的片段放进 prompt，但模型仍可能被片段里的话影响。请只导入
   你信任来源的教材。
-- **本地数据默认留在本地。** 书籍索引、记忆都写在 `.studybuddy/`，不会上传；
+- **本地数据默认留在本地。** 书籍索引、记忆都写在用户数据目录，不会上传：
+  Windows 默认 `%LOCALAPPDATA%\studybuddy`，macOS 默认 `~/Library/Application Support/studybuddy`，
+  Linux 默认 `$XDG_DATA_HOME/studybuddy`（未设置时为 `~/.local/share/studybuddy`）；
+  Python API 的 `StudyBuddy()` 默认用当前工作目录下的 `./.studybuddy/`。
   只有被检索到的片段会随请求发给模型服务商。
 - **每次生成的内容不是事实。** 引用是可以用页码核对的一道防线，但不能替代你自己
   翻书验证。
 - **不要把 API Key 写进仓库。** `.env` 已被 git 忽略，请用环境变量或密钥管理工具。
-- **共享设备。** `.studybuddy/memory.json` 里有你的学习记录，离开前记得删除或使用
-  独立目录（`--root`）。
+- **共享设备。** 数据目录里的 `memory.json` 有你的学习记录。离开前删除它，或用
+  `--root` / `STUDYBUDDY_ROOT` 指向一个独立目录；也可以把整个数据目录拷走后再删除。

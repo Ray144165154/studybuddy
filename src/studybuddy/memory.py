@@ -54,6 +54,22 @@ def _parse(moment: str) -> datetime | None:
         return None
 
 
+def _next_id(prefix: str, existing: Iterable[str]) -> str:
+    """One past the highest number in use, so deleting can never reuse an id.
+
+    ``len(list) + 1`` reuses the id of a removed row: delete f0002 out of
+    f0001..f0003 and the next fact is f0003 again, so ``--forget f0003`` would
+    delete two unrelated memories at once.
+    """
+    highest = 0
+    for identifier in existing:
+        if identifier.startswith(prefix):
+            suffix = identifier[len(prefix) :]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+    return f"{prefix}{highest + 1:04d}"
+
+
 class Memory:
     """The student's persistent learning history."""
 
@@ -91,8 +107,13 @@ class Memory:
         self.created_at = str(data.get("created_at") or self.created_at)
         self.updated_at = str(data.get("updated_at") or self.updated_at)
 
-    def save(self) -> None:
-        """Persist to disk. A read-only data directory must not break answering."""
+    def save(self) -> bool:
+        """Persist to disk, returning False when the data directory is not writable.
+
+        Callers that must report the failure (the web UI's "clear memory") check
+        the result; answering a question never fails because memory could not be
+        written -- the episode simply is not there on the next launch.
+        """
         self.updated_at = _iso(_now())
         payload = {
             "version": _FORMAT_VERSION,
@@ -108,6 +129,9 @@ class Memory:
         except OSError as exc:
             self.last_save_error = str(exc)
             print(f"[memory] 无法保存到 {self.path}: {exc}", file=sys.stderr, flush=True)
+            return False
+        self.last_save_error = None
+        return True
 
     # -- profile -------------------------------------------------------------------
 
@@ -153,7 +177,7 @@ class Memory:
                 return existing
 
         fact = Fact(
-            id=f"f{len(self.facts) + 1:04d}",
+            id=_next_id("f", (existing.id for existing in self.facts)),
             text=cleaned,
             topic=topic.strip(),
             kind=kind,
@@ -169,12 +193,13 @@ class Memory:
         return fact
 
     def remove_fact(self, fact_id: str) -> bool:
-        before = len(self.facts)
-        self.facts = [fact for fact in self.facts if fact.id != fact_id]
-        changed = len(self.facts) != before
-        if changed:
-            self.save()
-        return changed
+        """Remove one fact by id; a duplicated legacy id still deletes exactly one row."""
+        for index, fact in enumerate(self.facts):
+            if fact.id == fact_id:
+                del self.facts[index]
+                self.save()
+                return True
+        return False
 
     def record_episode(
         self,
@@ -185,7 +210,7 @@ class Memory:
         books: Iterable[str] | None = None,
     ) -> Episode:
         episode = Episode(
-            id=f"e{len(self.episodes) + 1:04d}",
+            id=_next_id("e", (existing.id for existing in self.episodes)),
             ts=_iso(_now()),
             question=" ".join(question.split()),
             summary=summary[:400],

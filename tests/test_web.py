@@ -215,6 +215,53 @@ class TestBackgroundMemory(WebTestCase):
         self.assertIn("elapsed", data)
 
 
+class TestShutdown(WebTestCase):
+    def test_closed_app_rejects_new_requests_with_503(self) -> None:
+        app = self.app()
+        app.close()
+        status, data = app.dispatch("GET", "/api/state", None, {})
+        self.assertEqual(status, 503)
+        self.assertIn("关闭", data["error"])
+
+    def test_closed_background_app_rejects_new_requests_with_503(self) -> None:
+        buddy = StudyBuddy(
+            self.root,
+            model="test-model",
+            api_key="not-needed",
+            llm=ScriptedLLM(says("答 [1]")),
+            library=self.library,
+            memory=self.memory,
+        )
+        app = WebApp(buddy, background_memory=True)
+        app.close()
+        status, _data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
+        self.assertEqual(status, 503)
+
+    def test_submit_after_shutdown_releases_the_slot_and_warns(self) -> None:
+        buddy = StudyBuddy(
+            self.root,
+            model="test-model",
+            api_key="not-needed",
+            llm=ScriptedLLM(says("答 [1]")),
+            library=self.library,
+            memory=self.memory,
+        )
+        app = WebApp(buddy, background_memory=True)
+        self.assertEqual(app._memory_slots._value, 8)
+        with patch.object(
+            app._memory_executor,
+            "submit",
+            side_effect=RuntimeError("cannot schedule new futures after shutdown"),
+        ):
+            status, data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率"}, {})
+        self.assertEqual(status, 200)
+        self.assertIn("答 [1]", data["text"])
+        self.assertTrue(any("关闭" in warning for warning in data["warnings"]))
+        self.assertEqual(app._memory_slots._value, 8, "a failed submit must not leak a slot")
+        self.assertEqual(self.memory.episodes, [])
+        app.close()
+
+
 class TestBooksAndUpload(WebTestCase):
     def test_local_model_does_not_require_a_key(self) -> None:
         from studybuddy import LLM
@@ -385,6 +432,23 @@ class TestMemoryActions(WebTestCase):
         self.assertEqual(self.memory.facts, [])
         self.assertEqual(self.memory.topics, {})
 
+    def test_clear_memory_reports_save_failure(self) -> None:
+        self.memory.add_fact("旧记忆")
+        # A directory where memory.json belongs makes write_text() fail deterministically.
+        self.memory.path.unlink()
+        self.memory.path.mkdir()
+        status, data = self.app().dispatch("POST", "/api/memory/clear", {}, {})
+        self.assertEqual(status, 409)
+        self.assertIsNot(data.get("ok"), True)
+        self.assertIn("数据目录", data["error"])
+        self.assertEqual([fact.text for fact in self.memory.facts], ["旧记忆"])
+
+    def test_memory_save_reports_failure_instead_of_swallowing(self) -> None:
+        self.memory.path.unlink(missing_ok=True)
+        self.memory.path.mkdir()
+        self.assertFalse(self.memory.save())
+        self.assertIsNotNone(self.memory.last_save_error)
+
     def test_grade(self) -> None:
         self.memory.note_topic("极限")
         status, data = self.app().dispatch("POST", "/api/grade", {"topic": "极限", "correct": True}, {})
@@ -457,6 +521,20 @@ class TestHttpServer(WebTestCase):
         status, data = self.post("/api/ask", {"question": "什么是条件概率？"})
         self.assertEqual(status, 200)
         self.assertEqual(data["text"], "答案 [1]")
+
+
+class TestBrowserUrl(unittest.TestCase):
+    def test_wildcard_binds_use_loopback_for_the_browser(self) -> None:
+        from studybuddy.web import _browser_url
+
+        self.assertEqual(_browser_url("0.0.0.0", 8765), "http://127.0.0.1:8765")
+        self.assertEqual(_browser_url("::", 8765), "http://127.0.0.1:8765")
+
+    def test_explicit_hosts_are_preserved(self) -> None:
+        from studybuddy.web import _browser_url
+
+        self.assertEqual(_browser_url("127.0.0.1", 8765), "http://127.0.0.1:8765")
+        self.assertEqual(_browser_url("localhost", 8765), "http://localhost:8765")
 
 
 if __name__ == "__main__":

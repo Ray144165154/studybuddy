@@ -217,6 +217,68 @@ class TestRetries(unittest.TestCase):
         ):
             LLM(api_key="k", max_retries=1).complete([Message(role="user", content="x")])
 
+    def test_retry_exhausted_is_an_llm_error(self) -> None:
+        """Callers map LLMError to "provider broke" (502); a retry give-up is the same."""
+        with (
+            patch("studybuddy.llm.urllib.request.urlopen", side_effect=urllib.error.URLError("offline")),
+            self.assertRaises(RetryExhausted) as ctx,
+        ):
+            LLM(api_key="k", max_retries=1).complete([Message(role="user", content="x")])
+        self.assertIsInstance(ctx.exception, LLMError)
+
+
+class TestMalformedResponses(unittest.TestCase):
+    """A 200 with an unusable body is a provider failure, never a raw parser crash."""
+
+    def _complete(self, body: str | bytes):
+        with patch("studybuddy.llm.urllib.request.urlopen", return_value=FakeResponse(body)):
+            return LLM(api_key="k", max_retries=0).complete([Message(role="user", content="x")])
+
+    def test_non_json_body_raises_llm_error(self) -> None:
+        with self.assertRaises(LLMError) as ctx:
+            self._complete("<html><body>captive portal</body></html>")
+        self.assertIn("无法解析", str(ctx.exception))
+
+    def test_non_utf8_body_raises_llm_error(self) -> None:
+        with self.assertRaises(LLMError) as ctx:
+            self._complete(b"\xff\xfe\x00not utf-8 text")
+        self.assertIn("无法解析", str(ctx.exception))
+
+    def test_non_object_json_body_raises_llm_error(self) -> None:
+        with self.assertRaises(LLMError) as ctx:
+            self._complete(json.dumps(["choices"]))
+        self.assertIn("无法解析", str(ctx.exception))
+
+    def test_non_numeric_usage_raises_llm_error(self) -> None:
+        body = chat_body(usage={"prompt_tokens": "many", "completion_tokens": 1, "total_tokens": 1})
+        with self.assertRaises(LLMError) as ctx:
+            self._complete(body)
+        self.assertIn("无法解析", str(ctx.exception))
+
+    def test_non_string_content_raises_llm_error(self) -> None:
+        body = json.dumps({"choices": [{"message": {"content": ["part"]}}]})
+        with self.assertRaises(LLMError) as ctx:
+            self._complete(body)
+        self.assertIn("无法解析", str(ctx.exception))
+
+    def test_error_body_is_read_up_to_64kb(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://example.test/v1/chat/completions",
+            500,
+            "boom",
+            {},
+            io.BytesIO(b"x" * (256 * 1024)),
+        )
+        self.addCleanup(error.close)
+        with (
+            patch("studybuddy.llm.urllib.request.urlopen", side_effect=error),
+            self.assertRaises(RetryExhausted) as ctx,
+        ):
+            LLM(api_key="k", max_retries=0).complete([Message(role="user", content="x")])
+        last = ctx.exception.last_error
+        self.assertIsInstance(last, LLMError)
+        self.assertLessEqual(len(last.body), 64 * 1024)
+
 
 def sse(*chunks: str) -> str:
     lines = []

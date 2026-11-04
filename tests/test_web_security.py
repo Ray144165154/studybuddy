@@ -146,11 +146,13 @@ class SecurityTestCase(unittest.TestCase):
 class HttpSecurityTestCase(SecurityTestCase):
     """Starts a real server so raw sockets can send un-normalised paths."""
 
+    bind_host = "127.0.0.1"
+
     def setUp(self) -> None:
         super().setUp()
         self.app = self.make_app(ScriptedLLM())
         handler = type("Handler", (_Handler,), {"app": self.app})
-        self.server = _QuietServer(("127.0.0.1", 0), handler)
+        self.server = _QuietServer((self.bind_host, 0), handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -202,6 +204,22 @@ class HttpSecurityTestCase(SecurityTestCase):
         request += f"Content-Length: {length}\r\n"
         request += "Connection: close\r\n\r\n"
         return self.raw(request.encode() + body)
+
+
+class TestWildcardBind(HttpSecurityTestCase):
+    """--host 0.0.0.0 only moves the bind address, not the Host allowlist."""
+
+    bind_host = "0.0.0.0"
+
+    def test_loopback_host_still_serves_the_page(self) -> None:
+        status, _headers, body = self.get("/api/state")
+        self.assertEqual(status, 200)
+        self.assertIn("books", json_body(body))
+
+    def test_lan_host_is_still_rejected(self) -> None:
+        status, _headers, body = self.get("/api/state", host=f"192.168.1.5:{self.port}")
+        self.assertEqual(status, 403)
+        self.assertIn("host not allowed", json_body(body)["error"])
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +460,44 @@ class TestErrors(SecurityTestCase):
         self.assertEqual(status, 502)
         self.assertIn("模型调用失败", data["error"])
 
+    def test_retry_exhausted_is_502(self) -> None:
+        class Failing:
+            def complete(self, messages: Any, tools: Any = None) -> LLMResponse:
+                from studybuddy.errors import LLMError, RetryExhausted
+
+                raise RetryExhausted(3, LLMError("upstream 500"))
+
+            async def acomplete(self, messages: Any, tools: Any = None) -> LLMResponse:
+                return self.complete(messages, tools)
+
+        status, data = self.make_app(Failing()).dispatch("POST", "/api/ask", {"question": "q"}, {})
+        self.assertEqual(status, 502)
+        self.assertIn("模型调用失败", data["error"])
+
+    def test_data_directory_errors_are_409(self) -> None:
+        """A read-only volume is an environment problem, not a server bug or bad input."""
+        app = self.make_app(ScriptedLLM())
+        with mock.patch.object(
+            app.buddy.library, "add_document", side_effect=OSError("read-only filesystem")
+        ):
+            status, data = app.dispatch("POST", "/api/add-text", {"title": "笔记", "text": "内容"}, {})
+        self.assertEqual(status, 409)
+        self.assertIn("数据目录", data["error"])
+        self.assertNotIn("内部错误", data["error"])
+
+        upload_app = self.make_app(ScriptedLLM())
+        with mock.patch.object(
+            upload_app.buddy.library, "add_book", side_effect=OSError("read-only filesystem")
+        ):
+            status, data = upload_app.dispatch(
+                "POST",
+                "/api/add-book",
+                {"name": "book.pdf", "data": base64.b64encode(b"%PDF-1.4 broken").decode()},
+                {},
+            )
+        self.assertEqual(status, 409)
+        self.assertIn("数据目录", data["error"])
+
 
 # ---------------------------------------------------------------------------
 # CSRF / DNS rebinding
@@ -529,6 +585,23 @@ class TestConfigure(SecurityTestCase):
                 self.assertNotIn(b"sk-canary-123", path.read_bytes(), f"key leaked into {path}")
 
 
+class TestModelOutputEncoding(HttpSecurityTestCase):
+    """A provider can return lone surrogates; the HTTP response must still be sent."""
+
+    def test_lone_surrogate_answer_is_repaired_before_encoding(self) -> None:
+        self.app.buddy.llm = ScriptedLLM(
+            LLMResponse(text="答案\ud800 [1]", usage=Usage(total_tokens=1), model="m")
+        )
+        status, _headers, body = self.post(
+            "/api/ask", json.dumps({"question": "什么是条件概率", "remember": False}).encode()
+        )
+        self.assertEqual(status, 200)
+        payload = json_body(body)
+        self.assertIn("答案", payload["text"])
+        self.assertNotIn("\ud800", payload["text"])
+        self.assertEqual(self.server.errors, [], "the handler must not raise on encoding")
+
+
 # ---------------------------------------------------------------------------
 # concurrency and safety defaults
 # ---------------------------------------------------------------------------
@@ -554,6 +627,34 @@ class TestConcurrency(SecurityTestCase):
         self.assertEqual(llm.max_active, 1, "ask() must not overlap")
 
 
+class _FakeServer:
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.server_address = address
+
+    def serve_forever(self) -> None:
+        raise KeyboardInterrupt
+
+    def server_close(self) -> None:
+        pass
+
+
+class _FakeWebApp:
+    llm_ready = True
+
+    def close(self) -> None:
+        pass
+
+
+class _ImmediateTimer:
+    """Run the browser opener synchronously; no sleep, no real timer thread."""
+
+    def __init__(self, _delay: float, function: Any) -> None:
+        self.function = function
+
+    def start(self) -> None:
+        self.function()
+
+
 class TestSafetyDefaults(unittest.TestCase):
     def test_serve_binds_loopback_by_default(self) -> None:
         signature = inspect.signature(serve)
@@ -562,6 +663,40 @@ class TestSafetyDefaults(unittest.TestCase):
     def test_body_and_upload_limits_exist(self) -> None:
         self.assertLessEqual(web_module._MAX_BODY_BYTES, 4 * 1024 * 1024)
         self.assertLessEqual(web_module._MAX_UPLOAD_BYTES, 100 * 1024 * 1024)
+
+    def _run_serve(self, host: str, port: int, *, open_browser: bool) -> tuple[list[str], mock.Mock]:
+        server = _FakeServer((host, port))
+        buddy = mock.Mock()
+        buddy.library.root = "/tmp/studybuddy-data"
+        with (
+            mock.patch.object(
+                web_module, "make_server", return_value=(server, _FakeWebApp(), f"http://{host}:{port}")
+            ),
+            mock.patch.object(web_module.threading, "Timer", _ImmediateTimer),
+            mock.patch("webbrowser.open") as opened,
+            mock.patch("builtins.print") as printed,
+        ):
+            serve(buddy, host=host, port=port, open_browser=open_browser)
+        lines = [" ".join(str(argument) for argument in call.args) for call in printed.call_args_list]
+        return lines, opened
+
+    def test_wildcard_bind_prints_and_opens_loopback_url(self) -> None:
+        lines, opened = self._run_serve("0.0.0.0", 43210, open_browser=True)
+        self.assertTrue(any("http://127.0.0.1:43210" in line for line in lines), lines)
+        self.assertFalse(any("http://0.0.0.0:43210" in line for line in lines), lines)
+        self.assertTrue(any("只改变监听地址" in line for line in lines), lines)
+        opened.assert_called_once_with("http://127.0.0.1:43210")
+
+    def test_wildcard_ipv6_bind_also_uses_loopback_url(self) -> None:
+        lines, opened = self._run_serve("::", 43211, open_browser=True)
+        self.assertTrue(any("http://127.0.0.1:43211" in line for line in lines), lines)
+        opened.assert_called_once_with("http://127.0.0.1:43211")
+
+    def test_explicit_loopback_bind_is_unchanged(self) -> None:
+        lines, opened = self._run_serve("127.0.0.1", 8765, open_browser=False)
+        self.assertTrue(any("http://127.0.0.1:8765" in line for line in lines), lines)
+        self.assertFalse(any("只改变监听地址" in line for line in lines), lines)
+        opened.assert_not_called()
 
 
 if __name__ == "__main__":

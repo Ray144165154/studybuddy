@@ -43,6 +43,25 @@ class TestDetectSection(unittest.TestCase):
     def test_long_line_is_not_heading(self) -> None:
         self.assertIsNone(detect_section("3.1 " + "很长的标题" * 20))
 
+    def test_numbered_prose_is_not_a_heading(self) -> None:
+        # A sentence that merely starts with a count is body text, not a section
+        # title. Treating it as a heading deletes the sentence from the index.
+        self.assertIsNone(detect_section("2 个向量线性无关当且仅当它们不成比例"))
+        self.assertIsNone(detect_section("1 设 A 为 n 阶可逆矩阵"))
+        self.assertIsNone(detect_section("60 分的及格线"))
+
+    def test_numbered_prose_stays_in_the_chunk_body(self) -> None:
+        text = (
+            "3.1 线性无关的定义\n\n"
+            "定义 3.1 线性无关。\n\n"
+            "2 个向量线性无关当且仅当它们不成比例\n\n"
+            "定理 3.2 任意子组线性无关。"
+        )
+        chunks = Chunker(book()).feed_page(3, text)
+        joined = "\n".join(chunk.text for chunk in chunks)
+        self.assertIn("2 个向量线性无关当且仅当它们不成比例", joined)
+        self.assertTrue(all(chunk.section == "3.1 线性无关的定义" for chunk in chunks))
+
     def test_blank(self) -> None:
         self.assertIsNone(detect_section("   "))
 
@@ -59,6 +78,31 @@ class TestNavigationPages(unittest.TestCase):
     def test_body_page_is_not_navigation(self) -> None:
         text = "定理3 设随机变量序列独立同分布，则其部分和服从大数定律。" * 6
         self.assertFalse(is_navigation_text(text))
+
+    def test_content_heading_mentioning_index_is_not_navigation(self) -> None:
+        # "B+ 树索引" is a chapter title, not a table of contents. Marking the page
+        # nav makes every chunk on it invisible to search.
+        page = (
+            "7.5 B+ 树索引\n\n"
+            "B+ 树索引是数据库中最常用的索引结构。B+ 树索引把键值有序地存放在叶子节点，"
+            "查询时从根节点向下定位。"
+        )
+        self.assertFalse(is_navigation_text(page))
+        chunks = Chunker(book()).feed_page(1, page)
+        self.assertTrue(chunks)
+        self.assertFalse(any(chunk.nav for chunk in chunks))
+
+    def test_content_heading_mentioning_directory_is_not_navigation(self) -> None:
+        page = (
+            "4.2 文件目录结构\n\n"
+            "Linux 采用树形的文件目录结构。目录结构中最上层是根目录 /，"
+            "每个目录都可以包含文件与子目录。"
+        )
+        self.assertFalse(is_navigation_text(page))
+
+    def test_toc_header_with_spacing_is_navigation(self) -> None:
+        # Chinese TOCs often typeset "目 录" with a space; it is still a TOC.
+        self.assertTrue(is_navigation_text("目 录\n第1章 概率与测度 1\n3.1 导数的概念 12"))
 
     def test_numbered_exercises_are_not_navigation(self) -> None:
         # 40 short numbered items, but they do not end in page references.

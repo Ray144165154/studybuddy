@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -326,6 +327,172 @@ class TestCompoundCoverage(StudyTestCase):
         ids = [chunk.id for chunk, _score in hits]
         self.assertIn("m:p10:0", ids)
 
+    def test_section_lead_survives_when_primary_fills_top_k(self) -> None:
+        # The chapter-opening chunk shares no query terms with the exercises, so a
+        # score-only merge drops it as soon as the primary pass fills top_k -- which
+        # would silently switch the section-lead feature off.
+        self.library.chunks = [
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="5.2 量子纠缠",
+                text="本节从一个实验现象说起，引出后面要讨论的问题。",
+            ),
+            *[
+                Chunk(
+                    id=f"m:p{page}:0",
+                    book_id="math-1",
+                    book_title="高等数学",
+                    page=page,
+                    section="5.2 量子纠缠",
+                    text="量子纠缠的定义与推导，量子纠缠的定义例题。" * 2,
+                )
+                for page in range(2, 8)
+            ],
+        ]
+        self.library.save()
+        buddy = self.buddy(says("答 [1]"), says(MEMORY_JSON))
+        hits, _warning = buddy._retrieve(
+            "量子纠缠的定义是什么",
+            books=buddy.library.books,
+            top_k=3,
+            per_book_cap=3,
+            semantic=False,
+        )
+        ids = [chunk.id for chunk, _score in hits]
+        self.assertIn("m:p1:0", ids)
+        scores = [score for _chunk, score in hits]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_compound_coverage_respects_per_book_cap(self) -> None:
+        self.library.books = [
+            Book(id="math-1", title="高等数学", pages=2, chunks=4),
+            Book(id="la-1", title="线性代数", pages=1, chunks=1),
+        ]
+        self.library.chunks = [
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="条件概率",
+                text="条件概率是在已知事件发生的条件下另一事件发生的概率。",
+            ),
+            Chunk(
+                id="m:p2:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=2,
+                section="条件概率",
+                text="条件概率的计算公式是 P(A|B)=P(AB)/P(B)。",
+            ),
+            Chunk(
+                id="m:p3:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=3,
+                section="独立性",
+                text="两个事件相互独立是指联合概率等于概率之积。",
+            ),
+            Chunk(
+                id="m:p4:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=4,
+                section="独立性",
+                text="独立性与条件概率的关系：独立时条件概率不变。",
+            ),
+            Chunk(
+                id="a:p1:0",
+                book_id="la-1",
+                book_title="线性代数",
+                page=1,
+                section="1.1 矩阵",
+                text="矩阵乘法不满足交换律。",
+            ),
+        ]
+        self.library.save()
+        buddy = self.buddy(says("答 [1]"), says(MEMORY_JSON))
+        hits, _warning = buddy._retrieve(
+            "条件概率和事件的独立性有什么关系",
+            books=buddy.library.books,
+            top_k=4,
+            per_book_cap=1,
+            semantic=False,
+        )
+        counts = Counter(chunk.book_id for chunk, _score in hits)
+        self.assertTrue(hits)
+        self.assertLessEqual(max(counts.values()), 1, f"per-book cap violated: {counts}")
+
+    def test_section_lead_keeps_its_real_score_and_does_not_jump_the_queue(self) -> None:
+        self.library.books = [Book(id="math-1", title="高等数学", pages=2, chunks=5)]
+        self.library.chunks = [
+            Chunk(
+                id="m:p10:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=10,
+                section="6.1 导数的应用",
+                text="导数用于判断单调性，导数的应用广泛，导数的符号决定增减。",
+            ),
+            Chunk(
+                id="m:p2:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=2,
+                section="2.1 导数",
+                text="导数也可以理解为切线斜率，导数的几何意义明确。",
+            ),
+            Chunk(
+                id="m:p3:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=3,
+                section="2.1 导数",
+                text="导数与连续的关系：可导必连续。",
+            ),
+            Chunk(
+                id="m:p1:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=1,
+                section="2.1 导数",
+                text="导数是函数在一点的瞬时变化率。",
+            ),
+            Chunk(
+                id="m:p4:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=4,
+                section="2.1 导数",
+                text="导数计算方法：四则运算与复合函数求导。",
+            ),
+        ]
+        self.library.save()
+        buddy = self.buddy(says("答 [1]"), says(MEMORY_JSON))
+        question = "导数的应用有哪些"
+        real_scores = {
+            chunk.id: score for chunk, score in buddy.library.search(question, top_k=5, per_book_cap=3)
+        }
+        hits, _warning = buddy._retrieve(
+            question,
+            books=buddy.library.books,
+            top_k=4,
+            per_book_cap=3,
+            semantic=False,
+        )
+        scores = [score for _chunk, score in hits]
+        self.assertEqual(scores, sorted(scores, reverse=True), "sources must be ordered by relevance")
+        for chunk, score in hits:
+            self.assertAlmostEqual(score, real_scores[chunk.id], places=9)
+        ids = [chunk.id for chunk, _score in hits]
+        self.assertIn("m:p1:0", ids)
+        # m:p1 is both a section lead and a real hit; it must stay behind the
+        # higher-scored m:p3 instead of being inserted with a fabricated 0.0.
+        self.assertLess(ids.index("m:p3:0"), ids.index("m:p1:0"))
+
 
 REWRITE_JSON = json.dumps(["导数 微分 关系", "求导 定义"], ensure_ascii=False)
 
@@ -440,12 +607,46 @@ class TestSummaryAndCompare(StudyTestCase):
         with self.assertRaises(StudyError):
             self.buddy(says("x")).summary(book="物理")
 
+    def test_summary_missing_chapter_raises(self) -> None:
+        # A chapter that is not in the book must not silently summarise chapter 1.
+        with self.assertRaises(StudyError):
+            self.buddy(says("x")).summary(book="高等数学", chapter="第四章 量子力学")
+
+    def test_summary_without_chapter_samples_the_whole_book(self) -> None:
+        self.library.chunks = [
+            Chunk(
+                id=f"math-1:p{i}:0",
+                book_id="math-1",
+                book_title="高等数学",
+                page=i,
+                section=f"{i // 10 + 1}.{i % 10 + 1} 第{i // 10 + 1}章小节",
+                text=f"第{i // 10 + 1}章内容：本例讲第{i // 10 + 1}章的要点说明。",
+            )
+            for i in range(1, 41)
+        ]
+        self.library.save()
+        answer = self.buddy(says("## 一句话概括\n提纲 [1]")).summary(book="高等数学")
+        pages = [source.chunk.page for source in answer.sources]
+        self.assertLessEqual(len(pages), 12)
+        self.assertGreater(max(pages), 20, "a book outline must not stop at the first 12 chunks")
+
+    def test_summary_cleans_invalid_citations(self) -> None:
+        answer = self.buddy(says("## 一句话概括\n要点见 [7] 与 [1]")).summary(book="高等数学")
+        self.assertIn("【无效引用】", answer.text)
+        self.assertIn("[1]", answer.text)
+        self.assertTrue(any("不存在的来源编号" in warning for warning in answer.warnings))
+
     def test_compare_merges_and_dedupes(self) -> None:
         result = self.buddy(says("区别如下 [1][2]")).compare("导数", "极限")
         self.assertIn("区别", result.text)
         self.assertTrue(result.sources)
         ids = [source.chunk.id for source in result.sources]
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_compare_cleans_invalid_citations(self) -> None:
+        result = self.buddy(says("区别在于 [9]")).compare("导数", "极限")
+        self.assertIn("【无效引用】", result.text)
+        self.assertTrue(any("不存在的来源编号" in warning for warning in result.warnings))
 
     def test_compare_without_matches(self) -> None:
         with self.assertRaises(StudyError):

@@ -23,16 +23,16 @@ pip install -e ".[dev]"
 提交前请确保：
 
 ```bash
-make check     # ruff + mypy --strict + 339 个测试
+make check     # ruff（含 format --check）+ mypy --strict + 480 个测试
 make demo      # 离线端到端演示还能跑
 ```
 
-CI 会在 Python 3.10 ~ 3.13 上跑同样的命令，所以别用 3.10 之后才有的语法
-（`match`、`TypeAlias`、`typing.override` 等）。
+CI 会在 Python 3.10 ~ 3.14 上跑测试。`match`、`TypeAlias` 是 3.10 就有的语法，可以放心用；
+别用 3.10 尚未提供的语法（如 `typing.override`、PEP 695 的 `type` 语句/泛型参数、`except*` 等）。
 
 ## 适合上手的 issue
 
-- 支持扫描版 PDF 的 OCR 提示与降级路径
+- 内置 OCR 引擎（当前只有 macOS 的 Vision 脚本，Windows/Linux 依赖 ocrmypdf）
 - 检索加上标题/小节的加权
 - 为英文教材补一套评测集
 - 记忆的导入/导出（换设备迁移）

@@ -60,6 +60,19 @@ def formula_ratio(text: str) -> float:
 _NAV_MARKERS = ("目录", "内容索引", "符号索引", "人名索引", "名词索引", "索引")
 _NUM_ENTRY = re.compile(r"^\s*(第?\s*\d+(\s*[.．]\s*\d+)*)\s+\S")
 _TRAIL_REF = re.compile(r"\d+\s*[.．]?\s*$")
+_TOC_DECORATION = re.compile(r"[（(【\[][^)）\]】]{0,8}[)）\]】]$")
+
+
+def _is_navigation_heading(line: str) -> bool:
+    """True when ``line`` is the page's own "目录"/"索引" header.
+
+    Matching a marker anywhere in the first lines used to hide real content pages
+    such as "7.5 B+ 树索引" from retrieval, so only a standalone header counts.
+    """
+    compact = re.sub(r"[\s\u3000]+", "", line)
+    compact = _TOC_DECORATION.sub("", compact)
+    compact = compact.strip("：:.-—–·•∙⋅・")
+    return compact in _NAV_MARKERS
 
 
 def is_navigation_text(text: str) -> bool:
@@ -73,8 +86,7 @@ def is_navigation_text(text: str) -> bool:
     if not lines:
         return False
 
-    head = " ".join(lines[:2])
-    if any(marker in head for marker in _NAV_MARKERS):
+    if any(_is_navigation_heading(line) for line in lines[:2]):
         return True
 
     if len(lines) >= 30:
@@ -87,9 +99,11 @@ def is_navigation_text(text: str) -> bool:
 
 
 # Chinese textbooks: 第三章 / 第二节 / 第 3 章, then "3.1 导数的概念", "1.2.3 Theorem".
+# A bare integer is *not* accepted: "2 个向量线性无关当且仅当它们不成比例" is a
+# sentence, and treating it as a heading deletes it from the index.
 _SECTION_PATTERNS = (
     re.compile(r"^\s*(第\s*[一二三四五六七八九十百千零〇\d]+\s*[章节篇讲])\s*(.{0,40})$"),
-    re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,2})\s+(\S.{0,40})$"),
+    re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){1,2})\s+(\S.{0,40})$"),
     re.compile(r"^\s*((?:Chapter|Section|Part)\s+[\dIVXLC]+)\b\s*(.{0,40})$", re.IGNORECASE),
 )
 

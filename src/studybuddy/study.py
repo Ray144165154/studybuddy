@@ -17,7 +17,8 @@ import json
 import os
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -334,6 +335,28 @@ class StudyBuddy:
             model=response.model or self.model,
         )
 
+        answer.text, citation_warnings = self._check_citations(answer.text, sources, web_sources)
+        answer.warnings.extend(citation_warnings)
+
+        self.session.append(Message(role="user", content=question))
+        self.session.append(Message(role="assistant", content=answer.text))
+
+        if remember and persist_memory:
+            self.remember(question, answer)
+        return answer
+
+    def _check_citations(
+        self,
+        text: str,
+        sources: Sequence[Source],
+        web_sources: Sequence[WebSource] = (),
+    ) -> tuple[str, list[str]]:
+        """Replace citation numbers that do not point at a supplied source.
+
+        A model can invent ``[7]`` or copy a bibliography marker out of the page
+        text. Anything that is not in ``sources``/``web_sources`` becomes
+        【无效引用】 so the reader can see the claim was not grounded.
+        """
         valid_citations = {str(source.index) for source in sources}
         valid_citations.update(f"W{source.index}" for source in web_sources)
         invalid: set[str] = set()
@@ -347,20 +370,15 @@ class StudyBuddy:
             cited.add(label)
             return match.group(0)
 
-        answer.text = _CITATION.sub(check_citation, answer.text)
+        cleaned = _CITATION.sub(check_citation, text)
+        warnings: list[str] = []
         if invalid:
-            answer.warnings.append("已移除不存在的来源编号：" + "、".join(sorted(invalid)))
+            warnings.append("已移除不存在的来源编号：" + "、".join(sorted(invalid)))
         if valid_citations and not cited:
-            answer.warnings.append("回答未包含有效来源引用，请核对教材原文")
+            warnings.append("回答未包含有效来源引用，请核对教材原文")
         if not valid_citations:
-            answer.warnings.append("未检索到可核对的来源，请勿将本回答视为教材结论")
-
-        self.session.append(Message(role="user", content=question))
-        self.session.append(Message(role="assistant", content=answer.text))
-
-        if remember and persist_memory:
-            self.remember(question, answer)
-        return answer
+            warnings.append("未检索到可核对的来源，请勿将本回答视为教材结论")
+        return cleaned, warnings
 
     def _web_results(self, question: str, warnings: list[str]) -> list[WebSource]:
         """Search the web, degrading to a warning when the provider fails."""
@@ -450,7 +468,13 @@ class StudyBuddy:
         semantic: bool,
         rewrite: bool = False,
     ) -> tuple[list[tuple[Chunk, float]], str | None]:
-        """Search, then make sure a compound question covers all of its parts."""
+        """Search, then make sure a compound question covers all of its parts.
+
+        The result is ordered by relevance and never holds more than
+        ``per_book_cap`` chunks from one book. A single-book scope keeps the same
+        relaxation of the cap that ``Library.search`` applies, so one book is never
+        starved of its own context.
+        """
         warning: str | None = None
 
         def search(text: str, limit: int) -> list[tuple[Chunk, float]]:
@@ -467,34 +491,69 @@ class StudyBuddy:
             )
 
         primary = search(question, top_k)
-        head = primary[:2]
-        seen = {chunk.id for chunk, _score in head}
+        single_book = len({book.id for book in books}) == 1
+        effective_cap = top_k if single_book else per_book_cap
+        seen = {chunk.id for chunk, _score in primary}
+        per_book: Counter[str] = Counter(chunk.book_id for chunk, _score in primary)
         coverage: list[tuple[Chunk, float]] = []
+
+        def cover(chunk: Chunk, score: float) -> None:
+            """Add a supplemental hit without breaking the per-book cap."""
+            if chunk.id in seen or per_book[chunk.book_id] >= effective_cap:
+                return
+            seen.add(chunk.id)
+            per_book[chunk.book_id] += 1
+            coverage.append((chunk, score))
 
         # Section titles are the book's own vocabulary: pull the opening chunk of
         # the best-matching sections so a definition buried at the start of a
-        # chapter is not lost behind its exercises.
+        # chapter is not lost behind its exercises. These get reserved slots below:
+        # once the primary pass has filled top_k, a plain score merge would drop
+        # them and silently disable the feature. Their score is the passage's real
+        # BM25 score, never a fabricated 0.0.
+        positions = {chunk.id: index for index, chunk in enumerate(self.library.chunks)}
+        passage_scores: list[float] | None = None
+        leads: list[tuple[Chunk, float]] = []
         for lead in self.library.section_leads(question, books=books, limit=2):
             if lead.id in seen:
                 continue
+            if passage_scores is None:
+                passage_scores = self.library.index.scores(question)
+            position = positions.get(lead.id)
+            score = passage_scores[position] if position is not None else 0.0
             seen.add(lead.id)
-            coverage.append((lead, 0.0))
+            per_book[lead.book_id] += 1
+            leads.append((lead, score))
 
         for query in self.rewrite_queries(question) if rewrite else []:
             for chunk, score in search(query, max(2, top_k // 3)):
-                if chunk.id in seen:
-                    continue
-                seen.add(chunk.id)
-                coverage.append((chunk, score))
+                cover(chunk, score)
 
         for part in split_query(question):
             for chunk, score in search(part, max(2, top_k // 3)):
-                if chunk.id in seen:
+                cover(chunk, score)
+
+        merged = primary + coverage
+        merged.sort(key=lambda item: item[1], reverse=True)
+        # Always leave room for at least one lead while keeping two primary hits,
+        # so the chapter-opening definition cannot be crowded out.
+        reserve = min(len(leads), max(0, top_k - 2))
+        kept = merged[: max(0, top_k - reserve)]
+        final = kept + leads[: max(0, top_k - len(kept))]
+        final.sort(key=lambda item: item[1], reverse=True)
+        if not single_book:
+            # A reserved lead can displace an ordinary hit from the same book, but
+            # the final list must still honour the cross-book cap. With one book the
+            # cap is already relaxed to top_k, so the length check below is enough.
+            counts: Counter[str] = Counter()
+            limited: list[tuple[Chunk, float]] = []
+            for chunk, score in final:
+                if counts[chunk.book_id] >= per_book_cap:
                     continue
-                seen.add(chunk.id)
-                coverage.append((chunk, score))
-        tail = [(chunk, score) for chunk, score in primary[2:] if chunk.id not in seen]
-        return (head + coverage + tail)[:top_k], warning
+                counts[chunk.book_id] += 1
+                limited.append((chunk, score))
+            final = limited
+        return final[:top_k], warning
 
     # -- memory --------------------------------------------------------------------
 
@@ -661,9 +720,13 @@ class StudyBuddy:
         response = self.llm.complete(
             [Message(role="system", content=SUMMARY_SYSTEM), Message(role="user", content=prompt)]
         )
+        text, citation_warnings = self._check_citations(
+            normalize_math_text((response.text or "").strip()), sources
+        )
         return Answer(
-            text=normalize_math_text((response.text or "").strip()),
+            text=text,
             sources=sources,
+            warnings=citation_warnings,
             usage=response.usage,
             model=response.model or self.model,
         )
@@ -708,10 +771,13 @@ class StudyBuddy:
         response = self.llm.complete(
             [Message(role="system", content=COMPARE_SYSTEM), Message(role="user", content=prompt)]
         )
+        text, citation_warnings = self._check_citations(
+            normalize_math_text((response.text or "").strip()), sources
+        )
         return Comparison(
-            text=normalize_math_text((response.text or "").strip()),
+            text=text,
             sources=sources,
-            warnings=[w for w in (warning_a, warning_b) if w],
+            warnings=[w for w in (warning_a, warning_b) if w] + citation_warnings,
         )
 
     # -- review (spaced repetition) -------------------------------------------------
@@ -834,6 +900,13 @@ class StudyBuddy:
         limit: int = 10,
         section_filter: str | None = None,
     ) -> list[Chunk]:
+        """The passages a quiz or a summary may draw from.
+
+        A missing topic is an error, not a reason to sample unrelated pages: the
+        caller asked for material about it. Only a book-wide request falls back to
+        sampling, and that sampling spans the whole book instead of its first
+        ``limit`` chunks.
+        """
         books = self.library.resolve_books([book] if book else None)
 
         if topic:
@@ -849,10 +922,16 @@ class StudyBuddy:
             chunks = [chunk for chunk, _score in hits]
             if chunks:
                 return chunks
-            # A topic that is not in the books must fail loudly, not fall back to
-            # sampling unrelated material and pretending it is about that topic.
-            if not book:
-                return []
+            if section_filter:
+                needle = section_filter.lower()
+                matched = [
+                    chunk
+                    for chunk in self.library.chunks
+                    if chunk.book_id in {item.id for item in books} and needle in chunk.section.lower()
+                ]
+                if matched:
+                    return matched[:limit]
+            raise StudyError(f"没有找到 {topic!r} 的内容" + (f"（{book}）" if book else ""))
 
         if section_filter:
             needle = section_filter.lower()
@@ -861,13 +940,12 @@ class StudyBuddy:
                 for chunk in self.library.chunks
                 if chunk.book_id in {item.id for item in books} and needle in chunk.section.lower()
             ]
-            if matched:
-                return matched[:limit]
+            if not matched:
+                raise StudyError(f"没有找到 {section_filter!r} 这一章的内容")
+            return matched[:limit]
 
-        if book:
-            return self.library.chunks_of(books[0].id)[:limit]
-
-        # No topic and no book: sample evenly so we never send an entire book.
+        # No topic: sample evenly across the whole (selected) book so a summary is
+        # not silently just the opening pages.
         pool = [chunk for chunk in self.library.chunks if chunk.book_id in {item.id for item in books}]
         if len(pool) <= limit:
             return pool

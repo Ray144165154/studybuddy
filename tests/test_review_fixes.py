@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import threading
+import unittest
+from pathlib import Path
 from unittest import mock
 
 import studybuddy.web as web_module
-from studybuddy import LLMResponse
+from studybuddy import Fact, LLMResponse, Memory
 from studybuddy.web import WebApp, _host_allowed, _origin_allowed
 from support import says
 from test_study import StudyTestCase, user_prompt
@@ -120,3 +123,38 @@ class TestBackgroundMemory(WebTestCase):
             app.close()
         self.assertEqual(self.memory.episodes, [])
         self.assertEqual(self.memory.topics, {})
+
+
+class TestMemoryIdentifiers(unittest.TestCase):
+    """Ids must never be reused, or ``--forget`` deletes two unrelated memories."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.memory = Memory(self.tmp / "data")
+
+    def test_fact_ids_stay_unique_after_deleting_one(self) -> None:
+        self.memory.add_fact("first")
+        second = self.memory.add_fact("second")
+        self.memory.add_fact("third")
+        self.memory.remove_fact(second.id)
+        self.memory.add_fact("fourth")
+        ids = [fact.id for fact in self.memory.facts]
+        self.assertEqual(len(ids), len(set(ids)), ids)
+
+    def test_episode_ids_stay_unique_after_pruning(self) -> None:
+        first = self.memory.record_episode("q1")
+        self.memory.record_episode("q2")
+        self.memory.episodes.remove(first)  # pruning keeps only the newest entries
+        self.memory.record_episode("q3")
+        ids = [episode.id for episode in self.memory.episodes]
+        self.assertEqual(len(ids), len(set(ids)), ids)
+
+    def test_remove_fact_by_id_deletes_exactly_one(self) -> None:
+        fact = self.memory.add_fact("keep")
+        # A legacy memory.json could already contain a duplicated id; --forget must
+        # still remove a single row instead of every row that shares the id.
+        self.memory.facts.append(Fact(id=fact.id, text="other", ts=fact.ts))
+        self.assertTrue(self.memory.remove_fact(fact.id))
+        self.assertEqual([item.text for item in self.memory.facts], ["other"])

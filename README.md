@@ -20,7 +20,8 @@ StudyBuddy 提供模型调用接口与本地教材检索，不提供共享 Key�
 Key 只存在内存里，不写磁盘；模型和接口地址会被记住。
 
 **② 导入教材** · 左侧「导入 PDF 教材」。中英文都支持。
-扫描版（整页是图片）需要先 OCR，再 `studybuddy add-text` 导入；有文字层的 PDF 直接传。
+有文字层的 PDF（包括 OCR 工具产出的带文字层 PDF）直接传；扫描版先用 OCR 生成带文字层的 PDF，
+或在网页外把 OCR 结果保存为 JSONL/TXT 后用 `studybuddy add-text` 导入。
 
 **③ 开始提问** · 底部输入问题，Enter 发送。回答里的 `[1]` 可以点，会跳到来源（书名 + 页码 + 小节）。
 
@@ -45,7 +46,7 @@ studybuddy doctor
 2. **要能跨教材** —— 「拉格朗日中值定理和柯西中值定理的关系」可能同时需要高数书和数分书。
 3. **要记得住你** —— 你薄弱的知识点、偏好的讲解方式、上次问过什么，跨会话保留，并按遗忘曲线安排复习。
 
-**中英文教材都支持**：中文按字符二元组索引（不需要分词器），英文按词索引（目录页与索引页会被自动识别并排除，否则它们会霸占几乎所有查询）；复合问句会按主题拆分，并额外按**小节标题**召回章节首页，避免"定义在章首、习题被搜到"的常见错位；
+**中英文教材都支持**：中文按字符二元组索引（不需要分词器），单字术语（熵、秩）另有字符级回退，英文按词索引（目录页与索引页会被自动识别并排除，否则它们会霸占几乎所有查询）；复合问句会按主题拆分，并额外按**小节标题**召回章节首页，避免"定义在章首、习题被搜到"的常见错位；
 章节标题同时识别 `第三章`、`3.1`、`Chapter 3`、`Section 2.1` 四种写法。
 中文 PDF 常见的字符合成问题（Kangxi 部首 `⾃` 代替 `自`）会被自动归一化，
 否则「自变量」永远搜不到「⾃变量」。
@@ -178,7 +179,8 @@ CI 在 **macOS、Windows、Linux** 三种系统上真跑测试（不只是 Linux
 | Windows | ✅ CI | 全流程可用；OCR 建议用 ocrmypdf 或 Mathpix |
 | Linux | ✅ CI | 同上，OCR 用 ocrmypdf 最省事 |
 
-代码里没有平台分支：路径全部用 `pathlib`，不调用外部命令。唯一需要留意的是终端编码——
+检索、解析和存储本身没有平台分支，路径统一用 `pathlib`；平台差异只集中在 CLI/桌面版选择用户数据目录、
+桌面窗口查找 Edge/Chrome，以及启动或终止浏览器进程这几处。需要留意的是终端编码——
 输出被重定向时（管道、CI、写文件）会自动切到 UTF-8，避免 Windows 默认代码页把中文打断。
 
 CLI 与桌面版默认使用当前用户的应用数据目录，启动位置变化不会新建空书库。各系统路径见文末“换电脑与首次使用”。可以显式改成绝对路径：
@@ -260,7 +262,7 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 | 错误信息泄露内部路径 | 500 只返回通用文案，细节留在终端日志 |
 | API Key | 只存在进程内存，不写盘、不回显 |
 
-默认监听 `127.0.0.1`；用 `studybuddy ui --host 0.0.0.0` 暴露到局域网时会在终端给出警告。
+默认监听 `127.0.0.1`。`studybuddy ui --host 0.0.0.0` 只改绑定地址；出于防 DNS rebinding，服务端只接受本机 Host/Origin，局域网设备访问会被拒绝。确实需要局域网访问时，请自己在前面加一层带鉴权的反向代理。
 
 ## 桌面端（窗口 / 双击启动）
 
@@ -286,10 +288,13 @@ app 模式用的是数据目录下的 `browser-profile/`，和你自己的浏览
 ### 双击运行的 exe / .app
 
 ```bash
+pip install "studybuddy[build]"   # 或在源码目录用 pip install -e ".[build]"
 pyinstaller packaging/studybuddy-desktop.spec --noconfirm
 # Windows: dist/StudyBuddy/StudyBuddy.exe
 # macOS:   dist/StudyBuddy.app
 ```
+
+打包需要在目标系统上进行：Windows 上出 exe、macOS 上出 `.app`，不能交叉编译。
 
 双击即可，没有命令行窗口。打包版没有可靠的"当前目录"，所以数据目录默认落在
 `%LOCALAPPDATA%\studybuddy`（macOS 是 `~/Library/Application Support/studybuddy`），
@@ -303,7 +308,7 @@ dist\StudyBuddy\StudyBuddy.exe --check
 
 ## 混合检索（可选）
 
-默认是纯词法检索（BM25 + 中文二元组）：术语准确、完全离线，但**同义改写会漏召回**——
+默认是纯词法检索（BM25 + 中文二元组，单字术语走字符级回退）：术语准确、完全离线，但**同义改写会漏召回**——
 你问「为什么求导和微分是一回事」，某页只写「导数与微分的关系」，词法匹配就找不到。
 
 补语义检索有两条路，都不影响不装的人：
@@ -355,7 +360,7 @@ RRF 只看名次（`1/(k+rank)` 累加），既不用调参，也不会因为某
 - **没有 embedding 也能用**：不配置就完全走词法检索，行为和以前一模一样。
 - **服务挂了也不崩**：查询向量化失败会自动退回词法检索，并在终端给出提示。
 - **可随时关闭**：`studybuddy ask ... --no-semantic`。
-- 向量存在 `.studybuddy/embeddings.jsonl`，base64 编码的 float32（每块约 6KB），
+- 向量存在数据目录内的 `embeddings.jsonl`，base64 编码的 float32（每块约 6KB），
   换模型或 `--force` 会重建；删除某本书时自动清理对应向量。
 
 Ollama 本地模型同样支持：
@@ -374,7 +379,7 @@ PDFError: no selectable text found in 概率论基础.pdf.
 It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again.
 ```
 
-OCR 之后用 `add-text` 导入即可。
+OCR 之后：OCR 工具产出的带文字层 PDF 用 `studybuddy add` 导入；OCR 结果保存成 JSONL/TXT 时用 `add-text` 导入（见下面两种方式）。
 
 **公式降噪**：数学扫描件的公式几乎必然被 OCR 认错（`σ`→`o`、`P(A|B)`→`P（AlB）`）。
 每个片段会记录两个信号——公式行占比、以及"中文教材里不该出现的假名"密度（`ん`/`で`
@@ -413,7 +418,7 @@ studybuddy add 概率论基础-ocr.pdf -c 概率论
 PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（保留 书名+页码+小节）
                                               │
                                               ▼
-问题 ──► 中文二元组 BM25 检索 ──► 片段 [1][2][3] ──┐
+问题 ──► 中文二元组 BM25 检索（单字回退）──► 片段 [1][2][3] ──┐
    ├──► 复合问句拆分（"A 与 B 的关系"）─────────────────┤
    └──► 小节标题匹配（把章节首页的"定义"拉进来）──────────┘
    │                                              ├──► prompt ──► 模型 ──► 带引用回答
@@ -428,7 +433,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 | --- | --- |
 | [`pdf.py`](src/studybuddy/pdf.py) | pypdf 抽取、页眉页脚清洗、扫描版报错提示 |
 | [`chunk.py`](src/studybuddy/chunk.py) | 章节识别、分块、保留页码与小节 |
-| [`index.py`](src/studybuddy/index.py) | 中文二元组分词 + BM25 |
+| [`index.py`](src/studybuddy/index.py) | 中文二元组分词（单字回退）+ BM25 |
 | [`store.py`](src/studybuddy/store.py) | 书库持久化、跨教材检索、按书去重 |
 | [`memory.py`](src/studybuddy/memory.py) | 长期记忆 + 间隔重复调度 |
 | [`study.py`](src/studybuddy/study.py) | 编排：检索 → 带引用回答 → 记忆抽取 |
@@ -453,7 +458,7 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 几个刻意的设计取舍：
 
-- **写在本地 JSON**：`.studybuddy/memory.json`，能打开看、能删、能拷到另一台机器。
+- **写在本地 JSON**：数据目录内的 `memory.json`（CLI/桌面版默认在用户应用数据目录，Python API 默认 `./.studybuddy/`），能打开看、能删、能拷到另一台机器。
 - **网页不等待记忆抽取**：回答先返回，后台再提取并保存记忆；清空记忆会废弃尚未保存的旧任务。
   后台队列最多容纳 8 个任务，满时提示本轮跳过记忆，退出服务时等待已排队任务结束。
   CLI 和 Python API 默认同步保存；`WebApp(..., background_memory=True)` 可开启后台模式，使用后调用 `close()`。
@@ -463,14 +468,24 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 
 ## 数据放在哪
 
+CLI 与桌面版默认把数据放在每用户的应用数据目录，启动位置变化不会新建空书库：
+
+| 系统 | 默认目录 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\studybuddy` |
+| macOS | `~/Library/Application Support/studybuddy` |
+| Linux | `$XDG_DATA_HOME/studybuddy`（未设置时为 `~/.local/share/studybuddy`） |
+
+Python API 的 `StudyBuddy()` 仍默认使用当前工作目录下的 `./.studybuddy/`。两种默认位置的目录结构相同：
+
 ```text
-.studybuddy/
-├── library.json   # 教材清单
-├── chunks.jsonl   # 分块索引（一行一块，可 grep）
-└── memory.json    # 画像、事实、历史、话题
+studybuddy/          # 或 ./.studybuddy/
+├── library.json     # 教材清单
+├── chunks.jsonl     # 分块索引（一行一块，可 grep）
+└── memory.json      # 画像、事实、历史、话题
 ```
 
-CLI 默认保存在用户应用数据目录；Python API 的 `StudyBuddy()` 仍默认使用 `.studybuddy/`。用 `--root` 或环境变量 `STUDYBUDDY_ROOT` 指定 CLI 数据位置：
+用 `--root` 或环境变量 `STUDYBUDDY_ROOT` 指定 CLI 数据位置：
 
 ```bash
 export STUDYBUDDY_ROOT="$HOME/Documents/studybuddy-data/library"
@@ -484,18 +499,24 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff + mypy --strict + 385 个测试
+make check       # ruff（含 format --check）+ mypy --strict + 480 个测试
 make demo        # 离线端到端演示
 ```
 
-测试全部离线：中英文各有一个真实 PDF 夹具（`tests/fixtures/zh_sample.pdf` 由真实
-PDF 生成器产出，含 Kangxi 部首），模型用 `ScriptedLLM` 或本地假服务端，不花钱也不联网。
+`make check` 是可离线运行的本地检查；CI 还会额外跑前端 Node 测试与离线 demo，
+并在 macOS / Windows 上跑同一套测试。
+
+测试全部离线：中文有一个真实 PDF 夹具（`tests/fixtures/zh_sample.pdf`，由真实 PDF
+生成器产出，含 Kangxi 部首），英文教材由测试内的 `make_textbook()` 现场生成 PDF；模型用
+`ScriptedLLM` 或本地假服务端，不花钱也不联网。
 
 ## 路线图
 
-- [ ] 扫描版 PDF 的 OCR 集成与降级
-- [ ] 向量检索（可选，接 embedding API），与 BM25 混合排序
-- [ ] 网页界面（上传 + 对话 + 记忆面板）
+- [x] 扫描版 PDF 的 OCR 降级提示（公式失真提示、扫描件明确报错）
+- [ ] 内置 OCR 集成：目前只有 macOS 的 Vision 脚本（`scripts/ocr_macos.swift`），
+  Windows/Linux 需先用 ocrmypdf 生成带文字层的 PDF
+- [x] 向量检索（可选，接 embedding API），与 BM25 混合排序
+- [x] 网页界面（上传 + 对话 + 记忆面板）
 - [ ] 记忆导入/导出，方便换设备
 - [ ] 期末模式：按考试范围生成整本书的复习计划
 
@@ -529,13 +550,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## 已知限制
 
-- 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR（OCR 后可用 `add-text` 导入）。
+- 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR（OCR 后导入生成的 PDF，或把 OCR
+  文本保存为 JSONL/TXT 再用 `add-text` 导入）。
 - OCR 会认错数学符号（`σ`→`o`、`𝒜`→`9`），公式类检索效果明显弱于正文。
 - 不做混合检索时，中文是纯词法匹配，同义改写（「求导」vs「微分」）可能漏召回；
-  配置 embedding 后可以缓解，但 embedding 需要额外的 API（DeepSeek 目前不提供
-  `/embeddings`，可指向 OpenAI 或本地 Ollama）。
+  配置 embedding 后可以缓解，但 embedding 需要额外的提供方（DeepSeek 目前不提供
+  `/embeddings`，可指向 OpenAI / 本地 Ollama，或使用本地 fastembed）。
 - 向量索引是一次性成本，但每次提问会多一次 embedding 调用。
-- 中文检索用字符二元组，对术语准确但语义泛化能力弱于向量检索。
+- 中文检索以字符二元组为主，单字术语靠字符级回退兜底；对术语准确，但语义泛化能力弱于向量检索。
 - 一次问答会发两轮请求（回答 + 记忆抽取），token 成本约为普通问答的 1.5 倍。
 
 ## License
@@ -550,9 +572,10 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 PDF textbooks, ask questions across all of them, and get answers with page-level
 citations. It keeps a long-term memory of your weak topics and preferences, and
 schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
-character bigrams (no tokenizer dependency), so it runs fully offline except for the
-model calls. Chinese and English textbooks are both supported and tested.
-385 offline tests, MIT licensed.
+character bigrams plus a single-character fallback (no tokenizer dependency), so it
+runs fully offline except for the model calls. Chinese and English textbooks are both
+supported and tested.
+480 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 

@@ -16,12 +16,19 @@ needed; users who want a native window can still
 ``pip install "studybuddy[desktop]"`` and run the console script.
 """
 
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821 - SPECPATH is injected by PyInstaller
 SRC = ROOT / "src"
 WEBUI = SRC / "studybuddy" / "webui"
+
+# The bundle version must not be a second copy of the release number: v0.9.0 once
+# shipped a macOS app whose Info.plist still said 0.8.5. pyproject.toml is the
+# single source of truth, so read it here instead of hard-coding a string.
+_VERSION = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "pyproject.toml").read_text("utf-8"), re.M)
+BUNDLE_VERSION = _VERSION.group(1) if _VERSION else "0.0.0"
 
 a = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "desktop_entry.py")],
@@ -73,7 +80,7 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="io.github.ray144165154.studybuddy",
         info_plist={
-            "CFBundleShortVersionString": "0.9.1",
+            "CFBundleShortVersionString": BUNDLE_VERSION,
             "LSMinimumSystemVersion": "11.0",
             "NSHighResolutionCapable": True,
         },

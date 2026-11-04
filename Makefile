@@ -25,7 +25,7 @@ fmt:  ## Format with ruff
 typecheck:  ## Static types with mypy
 	$(VENV)/bin/mypy src/studybuddy
 
-check: lint typecheck test  ## Everything CI runs
+check: lint typecheck test  ## 本地检查；CI 另跑前端 Node 测试、离线 demo 与跨平台 smoke
 	$(VENV)/bin/ruff format --check .
 
 demo:  ## Run the offline end-to-end demo (no API key)

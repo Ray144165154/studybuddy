@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
@@ -306,10 +307,23 @@ def _open_app_window(
     return False
 
 
+def _client_url(url: str) -> str:
+    """A URL a client can actually connect to when the server binds a wildcard.
+
+    ``0.0.0.0`` / ``[::]`` are bind addresses, not connect addresses: using them as
+    the client host makes the self-check request go to a Host the UI rejects.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.hostname in {"0.0.0.0", "::"}:
+        netloc = f"127.0.0.1:{parsed.port}" if parsed.port else "127.0.0.1"
+        return urllib.parse.urlunsplit(parsed._replace(netloc=netloc))
+    return url
+
+
 def _check(buddy: StudyBuddy, app: DesktopApp) -> int:
     """Headless smoke test used by the packaged build and CI."""
     try:
-        with urllib.request.urlopen(f"{app.url}/api/state", timeout=10) as response:
+        with urllib.request.urlopen(f"{_client_url(app.url)}/api/state", timeout=10) as response:
             payload: dict[str, Any] = json.loads(response.read().decode("utf-8"))
         sample = Path(__file__).parent / "zh_sample.pdf"
         if not sample.exists() and not getattr(sys, "frozen", False):
@@ -335,7 +349,7 @@ def _check(buddy: StudyBuddy, app: DesktopApp) -> int:
         print(f"自检失败: {exc}", file=sys.stderr)
         return 1
     print(
-        f"自检通过: {payload.get('version')} · {app.url} · "
+        f"自检通过: {payload.get('version')} · {_client_url(app.url)} · "
         f"{payload.get('stats', {}).get('books', 0)} 本教材 · 数据目录 {buddy.library.root}"
     )
     return 0
@@ -361,24 +375,32 @@ def run_desktop(
         if check:
             return _check(buddy, app)
 
-        print(f"studybuddy {__version__}  →  {app.url}", flush=True)
+        # 0.0.0.0/:: are bind addresses; a window or browser must connect via loopback.
+        client_url = _client_url(app.url)
+        print(f"studybuddy {__version__}  →  {client_url}", flush=True)
         print(f"数据目录: {buddy.library.root}", flush=True)
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            print(
+                f"警告: 正在监听 {host}；界面仍只接受本机访问，其他设备会被拒绝。",
+                file=sys.stderr,
+                flush=True,
+            )
         print("关闭窗口即可退出", flush=True)
 
-        if native in ("auto", "webview") and _open_native_window(app.url, width=width, height=height):
+        if native in ("auto", "webview") and _open_native_window(client_url, width=width, height=height):
             return 0
         if native == "webview":
             raise StudyError('没有安装 pywebview，先运行: pip install "studybuddy[desktop]"')
 
         profile = Path(buddy.library.root) / "browser-profile"
         if native in ("auto", "browser") and _open_app_window(
-            app, app.url, profile, width=width, height=height
+            app, client_url, profile, width=width, height=height
         ):
             return 0
 
         # Last resort: no Chromium browser on this machine.
         print("没有找到 Edge / Chrome，改用系统默认浏览器。", file=sys.stderr, flush=True)
-        __import__("webbrowser").open(app.url)
+        __import__("webbrowser").open(client_url)
         print("按 Ctrl-C 退出", flush=True)
         try:
             threading.Event().wait()
