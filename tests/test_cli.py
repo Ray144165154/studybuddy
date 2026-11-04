@@ -78,7 +78,7 @@ class TestCli(unittest.TestCase):
         self.assertNotIn(other, out)
 
     def test_doctor_reports_missing_steps(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"HOME": str(self.tmp), "USERPROFILE": str(self.tmp)}, clear=True):
             code, out, _ = run("--root", self.root, "doctor")
         self.assertEqual(code, 0)
         self.assertIn("环境自检", out)
@@ -88,7 +88,11 @@ class TestCli(unittest.TestCase):
 
     def test_doctor_reports_ready_after_import(self) -> None:
         run("--root", self.root, "add", str(self.pdf))
-        with patch.dict(os.environ, {"STUDYBUDDY_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"STUDYBUDDY_API_KEY": "sk-test", "HOME": str(self.tmp), "USERPROFILE": str(self.tmp)},
+            clear=True,
+        ):
             code, out, _ = run("--root", self.root, "doctor")
         self.assertEqual(code, 0)
         self.assertIn("书库 1 本", out)
@@ -153,7 +157,7 @@ class TestCli(unittest.TestCase):
 
     def test_index_without_embedding_config(self) -> None:
         run("--root", self.root, "add", str(self.pdf))
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"HOME": str(self.tmp), "USERPROFILE": str(self.tmp)}, clear=True):
             code, _, err = run("--root", self.root, "index")
         self.assertEqual(code, 1)
         self.assertIn("embedding", err)

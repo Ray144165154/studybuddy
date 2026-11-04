@@ -156,7 +156,11 @@ class TestRunDesktop(DesktopTestCase):
 
 class TestCliHelpers(unittest.TestCase):
     def test_macos_data_root_is_independent_of_working_directory(self) -> None:
-        with patch.dict(os.environ, {}, clear=True), patch("sys.platform", "darwin"):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("sys.platform", "darwin"),
+            patch("pathlib.Path.home", return_value=Path("/Users/student")),
+        ):
             expected = str(Path.home() / "Library" / "Application Support" / "studybuddy")
             self.assertEqual(_default_root(), expected)
             with patch("sys.frozen", True, create=True):
