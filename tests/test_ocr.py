@@ -189,15 +189,17 @@ class TestOutputKind(unittest.TestCase):
 
 class TestCommandBuilding(unittest.TestCase):
     def test_compile_command_uses_the_frameworks_the_script_needs(self) -> None:
-        command = ocr.compile_command(SWIFTC, Path("/pkg/ocr_macos.swift"), Path("/tmp/studybuddy-ocr/bin"))
+        source = Path("/pkg/ocr_macos.swift")
+        binary = Path("/tmp/studybuddy-ocr/bin")
+        command = ocr.compile_command(SWIFTC, source, binary)
         self.assertEqual(
             command,
             [
                 SWIFTC,
                 "-O",
-                "/pkg/ocr_macos.swift",
+                str(source),
                 "-o",
-                "/tmp/studybuddy-ocr/bin",
+                str(binary),
                 "-framework",
                 "PDFKit",
                 "-framework",
@@ -208,8 +210,11 @@ class TestCommandBuilding(unittest.TestCase):
         )
 
     def test_vision_command_matches_the_documented_argument_order(self) -> None:
-        command = ocr.vision_command(Path("/tmp/bin"), Path("/tmp/in.pdf"), Path("/tmp/pages.jsonl"), 422)
-        self.assertEqual(command, ["/tmp/bin", "/tmp/in.pdf", "/tmp/pages.jsonl", "1", "422", "150"])
+        binary = Path("/tmp/bin")
+        source = Path("/tmp/in.pdf")
+        output = Path("/tmp/pages.jsonl")
+        command = ocr.vision_command(binary, source, output, 422)
+        self.assertEqual(command, [str(binary), str(source), str(output), "1", "422", "150"])
 
     def test_vision_command_honours_a_custom_dpi(self) -> None:
         command = ocr.vision_command(
@@ -218,7 +223,9 @@ class TestCommandBuilding(unittest.TestCase):
         self.assertEqual(command[-1], "200")
 
     def test_ocrmypdf_command_skips_existing_text_layers(self) -> None:
-        command = ocr.ocrmypdf_command(OCRMYPDF, Path("/tmp/in.pdf"), Path("/tmp/in-ocr.pdf"))
+        source = Path("/tmp/in.pdf")
+        output = Path("/tmp/in-ocr.pdf")
+        command = ocr.ocrmypdf_command(OCRMYPDF, source, output)
         self.assertEqual(
             command,
             [
@@ -226,8 +233,8 @@ class TestCommandBuilding(unittest.TestCase):
                 "--skip-text",
                 "-l",
                 "chi_sim+eng",
-                "/tmp/in.pdf",
-                "/tmp/in-ocr.pdf",
+                str(source),
+                str(output),
             ],
         )
 
