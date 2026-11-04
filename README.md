@@ -2,6 +2,11 @@
 
 **上传你的教材 PDF，跨多本书答疑，每个答案都能翻到具体第几页。它还会记住你哪里薄弱，并按遗忘曲线提醒你复习。**
 
+面向学生，优先使用云端模型：填写自己的 API Key 即可接入，无需部署模型。
+StudyBuddy 提供模型调用接口与本地教材检索，不提供共享 Key。Key 仅保存在本机进程内存中，
+请求从本机直接发往你选择的模型服务商。教材与学习记录保存在本机；调用时会发送问题、
+检索到的教材片段，以及启用记忆时召回的学习上下文，服务商的数据政策仍适用。本地 Ollama 为可选接入方式。
+
 [![CI](https://github.com/Ray144165154/studybuddy/actions/workflows/ci.yml/badge.svg)](https://github.com/Ray144165154/studybuddy/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -236,6 +241,10 @@ studybuddy ui          # 打开 http://127.0.0.1:8765
 - **设置**：内置 DeepSeek / OpenAI / 本地 Ollama 预设，一键填好模型与端点。
   模型和接口地址会记在数据目录内的 `ui-config.json`；**API Key 只存在进程内存里，不写磁盘**，
   重启需要重填（这是有意的）
+
+中文输入法确认候选词时不会发送问题；等待回答时再次提交会保留下一条草稿。
+缺少教材或模型配置时保留输入，模型请求失败时会恢复问题（已有新草稿时不覆盖）。
+修改同一接口的模型时，API Key 留空可沿用当前 Key；更换接口地址会清除旧 Key，请填写新接口对应的 Key。
 
 ### 安全边界
 

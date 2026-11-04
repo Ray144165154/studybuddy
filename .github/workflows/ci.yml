@@ -52,6 +52,9 @@ jobs:
       - name: Frontend upload tests
         run: node tests/js/upload.test.js
 
+      - name: Frontend interaction tests
+        run: node tests/js/interaction.test.js
+
       - name: Test
         run: python -m unittest discover -s tests -v
 
@@ -98,6 +101,9 @@ jobs:
 
       - name: Frontend upload tests
         run: node tests/js/upload.test.js
+
+      - name: Frontend interaction tests
+        run: node tests/js/interaction.test.js
 
       - name: Test
         run: python -m unittest discover -s tests -v

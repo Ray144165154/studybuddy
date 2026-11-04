@@ -386,7 +386,7 @@ class WebApp:
         return {"book": book.to_dict()}
 
     def configure(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Update the model settings for this process only (the key is never stored)."""
+        """Save model settings; keep keys in memory and discard them when endpoints change."""
         for field in ("model", "base_url", "api_key"):
             if field in payload and not isinstance(payload[field], str):
                 raise StudyErrorBadRequest(f"{field} 必须是字符串")
@@ -410,6 +410,8 @@ class WebApp:
             self.buddy.llm.model = self.buddy.model
         if str(payload.get("base_url", "")).strip():
             base = str(payload["base_url"]).strip().rstrip("/")
+            if base != getattr(self.buddy.llm, "base_url", "").rstrip("/"):
+                self.buddy.llm.api_key = "not-needed"
             self.buddy.llm.base_url = base
         if str(payload.get("api_key", "")).strip():
             self.buddy.llm.api_key = str(payload["api_key"]).strip()

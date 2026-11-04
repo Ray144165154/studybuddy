@@ -73,7 +73,7 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="io.github.ray144165154.studybuddy",
         info_plist={
-            "CFBundleShortVersionString": "0.9.0",
+            "CFBundleShortVersionString": "0.9.1",
             "LSMinimumSystemVersion": "11.0",
             "NSHighResolutionCapable": True,
         },

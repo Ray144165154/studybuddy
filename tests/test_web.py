@@ -268,6 +268,36 @@ class TestBooksAndUpload(WebTestCase):
 
 
 class TestSettings(WebTestCase):
+    def test_endpoint_change_discards_old_key(self) -> None:
+        app = self.app()
+        app.configure({"base_url": "https://first.example/v1", "api_key": "sk-first"})
+        status, data = app.dispatch("POST", "/api/config", {"base_url": "https://second.example/v1"}, {})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["llm_ready"])
+        self.assertEqual(app.buddy.llm.api_key, "not-needed")
+
+    def test_same_endpoint_keeps_key_when_omitted_or_blank(self) -> None:
+        app = self.app()
+        app.configure({"base_url": "https://first.example/v1", "api_key": "sk-first"})
+        for extra in ({}, {"api_key": "  "}):
+            data = app.configure({"base_url": "https://first.example/v1/", "model": "m2", **extra})
+            self.assertTrue(data["llm_ready"])
+            self.assertEqual(app.buddy.llm.api_key, "sk-first")
+
+    def test_endpoint_change_accepts_replacement_key(self) -> None:
+        app = self.app()
+        app.configure({"base_url": "https://first.example/v1", "api_key": "sk-first"})
+        data = app.configure({"base_url": "https://second.example/v1", "api_key": "sk-second"})
+        self.assertTrue(data["llm_ready"])
+        self.assertEqual(app.buddy.llm.api_key, "sk-second")
+
+    def test_switching_through_local_endpoint_does_not_reuse_cloud_key(self) -> None:
+        app = self.app()
+        app.configure({"base_url": "https://first.example/v1", "api_key": "sk-first"})
+        self.assertTrue(app.configure({"base_url": "http://127.0.0.1:11434/v1"})["llm_ready"])
+        self.assertEqual(app.buddy.llm.api_key, "not-needed")
+        self.assertFalse(app.configure({"base_url": "https://first.example/v1"})["llm_ready"])
+
     def test_configure_updates_process_only(self) -> None:
         app = self.app()
         status, data = app.dispatch(

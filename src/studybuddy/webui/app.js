@@ -334,15 +334,16 @@ function scrollDown() {
 }
 
 async function ask(question) {
+  if ($("send").disabled) return;
   if (!STATE || !STATE.stats.books) {
     alert("先导入一本教材");
     return;
   }
   if (!STATE.llm_ready) {
-    $("question").value = question;
     openSettings();
     return;
   }
+  $("question").value = "";
   addUser(question);
   const card = addAssistantCard();
   card.innerHTML = '<p class="foot">检索教材中…</p>';
@@ -362,6 +363,7 @@ async function ask(question) {
   } catch (error) {
     card.innerHTML = "";
     card.append(el("div", "warn", `出错: ${error.message}`));
+    if (!$("question").value) $("question").value = question;
   } finally {
     send.disabled = false;
     scrollDown();
@@ -691,6 +693,7 @@ function openSettings() {
     $("set-model").value = STATE.model || "";
     $("set-base").value = STATE.base_url || "";
   }
+  $("set-key").value = "";
   $("settings-error").textContent = "";
   $("settings").showModal();
 }
@@ -715,12 +718,11 @@ $("ask-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const question = $("question").value.trim();
   if (!question) return;
-  $("question").value = "";
-  ask(question);
+  return ask(question);
 });
 
 $("question").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     $("ask-form").requestSubmit();
   }
