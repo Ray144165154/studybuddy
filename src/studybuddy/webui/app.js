@@ -643,6 +643,58 @@ function renderMemory(root, data) {
   }
   root.append(due);
 
+  const transfer = el("div", "mem-section");
+  transfer.append(el("h3", "换设备"));
+  transfer.append(el("div", "foot", "导出成一个 JSON 文件，在另一台电脑的同一位置导入即可。"));
+  const transferRow = el("div", "row");
+
+  const exportButton = el("button", "btn tiny", "导出记忆");
+  exportButton.onclick = async () => {
+    try {
+      const data = await api("/api/memory/export");
+      const blob = new Blob([JSON.stringify(data.snapshot, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `studybuddy-memory-${new Date().toISOString().slice(0, 10)}.json`;
+      // Safari ignores click() on a detached anchor.
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      alert(`导出失败: ${error.message}`);
+    }
+  };
+
+  const importInput = document.createElement("input");
+  importInput.type = "file";
+  importInput.accept = ".json,application/json";
+  importInput.hidden = true;
+  const importButton = el("button", "btn tiny", "导入记忆");
+  importButton.onclick = () => importInput.click();
+  importInput.onchange = async () => {
+    const file = importInput.files[0];
+    importInput.value = "";
+    if (!file) return;
+    try {
+      const snapshot = JSON.parse(await file.text());
+      const result = await api("/api/memory/import", { snapshot });
+      const counts = result.counts || {};
+      alert(
+        `已合并导入：新增 ${counts.facts_added || 0} 条事实、` +
+          `${counts.episodes_added || 0} 条历史、${counts.topics_added || 0} 个话题。`
+      );
+      openMemory();
+    } catch (error) {
+      alert(`导入失败: ${error.message}`);
+    }
+  };
+
+  transferRow.append(exportButton, importButton);
+  transfer.append(transferRow, importInput);
+  root.append(transfer);
+
   const clear = el("button", "btn ghost", "清空记忆");
   clear.onclick = async () => {
     if (!confirm("清空后薄弱点、话题和历史都会删除（画像保留），确定？")) return;

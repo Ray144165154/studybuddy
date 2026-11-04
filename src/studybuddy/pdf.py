@@ -165,7 +165,8 @@ def read_pdf(path: str | Path) -> PdfDocument:
             )
         raise PDFError(
             f"no selectable text found in {file.name}. "
-            "It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again."
+            "It looks like a scanned book -- run OCR with `studybuddy ocr` first "
+            "(macOS uses the built-in Vision engine; Windows/Linux use ocrmypdf)."
         )
 
     metadata: Any = reader.metadata or {}

@@ -257,6 +257,97 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("错误", err)
 
+    def test_memory_export_import_round_trip(self) -> None:
+        run("--root", self.root, "grade", "极限", "--correct")
+        exported = self.tmp / "memory.json"
+        code, out, _ = run("--root", self.root, "memory", "--export", str(exported))
+        self.assertEqual(code, 0)
+        self.assertIn("已导出", out)
+        self.assertEqual(json.loads(exported.read_text("utf-8"))["version"], 1)
+
+        other = str(self.tmp / "other")
+        code, out, _ = run("--root", other, "memory", "--import", str(exported))
+        self.assertEqual(code, 0)
+        self.assertIn("合并导入", out)
+        _, out, _ = run("--root", other, "memory")
+        self.assertIn("极限", out)
+
+    def test_memory_import_rejects_garbage(self) -> None:
+        bad = self.tmp / "bad.json"
+        bad.write_text("not json", encoding="utf-8")
+        code, _, err = run("--root", self.root, "memory", "--import", str(bad))
+        self.assertEqual(code, 2)
+        self.assertIn("corrupted", err)
+
+    def test_memory_flags_are_exclusive(self) -> None:
+        code, _, err = run("--root", self.root, "memory", "--clear", "--export", str(self.tmp / "x.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("一次只能用一个", err)
+
+    def test_plan_renders_a_day_by_day_schedule(self) -> None:
+        run("--root", self.root, "add", str(self.pdf), "--title", "高等数学")
+        code, out, _ = run("--root", self.root, "plan", "--days", "2")
+        self.assertEqual(code, 0)
+        self.assertIn("期末复习计划", out)
+        self.assertIn("第 2 天", out)
+
+    def test_plan_json_is_parseable(self) -> None:
+        run("--root", self.root, "add", str(self.pdf), "--title", "高等数学")
+        code, out, _ = run("--root", self.root, "plan", "--chapter", "3", "--days", "2", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(len(payload["days"]), 2)
+        self.assertEqual(payload["range_label"], "第 3 章")
+
+    def test_plan_rejects_bad_input(self) -> None:
+        run("--root", self.root, "add", str(self.pdf))
+        code, _, err = run("--root", self.root, "plan", "--days", "0")
+        self.assertEqual(code, 2)
+        self.assertIn("1 到 60", err)
+        code, _, err = run("--root", self.root, "plan", "--start", "2026-13-01")
+        self.assertEqual(code, 2)
+        self.assertIn("YYYY-MM-DD", err)
+
+    def test_ocr_dry_run_reports_the_backend(self) -> None:
+        from studybuddy.ocr import OcrBackend
+
+        with patch(
+            "studybuddy.ocr.detect_backend", return_value=OcrBackend("vision", True, "/usr/bin/swiftc")
+        ):
+            code, out, _ = run("--root", self.root, "ocr", str(self.pdf), "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("vision", out)
+        self.assertIn("-ocr.jsonl", out)
+
+    def test_ocr_imports_the_produced_pages(self) -> None:
+        from studybuddy.ocr import OcrBackend
+
+        def fake_ocr(pdf, output, **_kwargs):  # type: ignore[no-untyped-def]
+            output.write_text('{"page": 1, "text": "导数的定义是增量之比。"}\n', encoding="utf-8")
+            return output
+
+        out_path = self.tmp / "pages.jsonl"
+        with (
+            patch("studybuddy.ocr.detect_backend", return_value=OcrBackend("vision", True, "swiftc")),
+            patch("studybuddy.ocr.ocr_pdf", side_effect=fake_ocr),
+        ):
+            code, out, _ = run(
+                "--root", self.root, "ocr", str(self.pdf), "-o", str(out_path), "--import", "-t", "扫描版"
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("已导入", out)
+        _, out, _ = run("--root", self.root, "books", "--json")
+        self.assertIn("扫描版", out)
+
+    def test_ocr_without_any_backend_explains_what_to_install(self) -> None:
+        with (
+            patch("studybuddy.ocr.detect_backend", return_value=None),
+            patch("studybuddy.ocr.backend_hint", return_value="请安装 swiftc"),
+        ):
+            code, _, err = run("--root", self.root, "ocr", str(self.pdf))
+        self.assertEqual(code, 3)
+        self.assertIn("请安装 swiftc", err)
+
 
 if __name__ == "__main__":
     unittest.main()

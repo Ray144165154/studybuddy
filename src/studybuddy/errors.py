@@ -40,6 +40,10 @@ class PDFError(AgentError):
     """A PDF could not be read, is encrypted, or contains no extractable text."""
 
 
+class OcrError(AgentError):
+    """OCR could not run: no backend, a compiler failure, or unusable output."""
+
+
 class LibraryError(AgentError):
     """The local library of books and chunks is missing or malformed."""
 

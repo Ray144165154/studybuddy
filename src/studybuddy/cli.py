@@ -179,9 +179,41 @@ def _build_parser() -> argparse.ArgumentParser:
     group.add_argument("--correct", action="store_true")
     group.add_argument("--wrong", action="store_true")
 
-    memory = sub.add_parser("memory", help="查看或清理记忆")
+    memory = sub.add_parser("memory", help="查看、清理或迁移记忆")
     memory.add_argument("--forget", default=None, help="删除指定记忆编号")
     memory.add_argument("--clear", action="store_true", help="清空全部记忆")
+    memory.add_argument(
+        "--export", dest="export_path", default=None, metavar="FILE", help="把记忆导出为 JSON 文件"
+    )
+    memory.add_argument(
+        "--import", dest="import_path", default=None, metavar="FILE", help="从 JSON 文件导入记忆（默认合并）"
+    )
+    memory.add_argument(
+        "--replace",
+        action="store_true",
+        help="导入时用文件内容替换现有 facts/topics/episodes（默认合并）",
+    )
+
+    plan = sub.add_parser("plan", help="按考试范围生成期末复习计划")
+    plan.add_argument("--book", default=None, help="限定教材；不填则覆盖全部教材")
+    plan.add_argument("--chapter", default=None, help='考试范围，如 "3"、"3-5"、"第三章"、"3,5"')
+    plan.add_argument("--days", type=int, default=7, help="从今天起安排多少天（1-60）")
+    plan.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD，默认今天")
+    plan.add_argument("--json", action="store_true", help="输出 JSON，便于脚本处理")
+
+    ocr = sub.add_parser("ocr", help="给扫描版 PDF 做 OCR（自动选择本地后端）")
+    ocr.add_argument("file", help="扫描版 PDF")
+    ocr.add_argument("-o", "--out", default=None, help="输出文件（默认同目录 -ocr.jsonl 或 -ocr.pdf）")
+    ocr.add_argument(
+        "--backend",
+        choices=["auto", "vision", "ocrmypdf"],
+        default="auto",
+        help="auto: macOS 用 Vision，其他系统用 ocrmypdf",
+    )
+    ocr.add_argument("-c", "--course", default="", help="导入时的课程名")
+    ocr.add_argument("-t", "--title", default=None, help="导入时的书名（默认取文件名）")
+    ocr.add_argument("--import", dest="do_import", action="store_true", help="OCR 后直接导入书库")
+    ocr.add_argument("--dry-run", action="store_true", help="只显示将使用哪个后端和命令，不执行")
 
     profile = sub.add_parser("profile", help="设置学生画像")
     profile.add_argument("--name")
@@ -361,6 +393,38 @@ def _warn_if_memory_unsaved(memory: Any) -> int | None:
 
 def _cmd_memory(buddy: StudyBuddy, args: argparse.Namespace) -> int:
     memory = buddy.memory
+    actions = [args.clear, bool(args.forget), bool(args.export_path), bool(args.import_path)]
+    if sum(1 for action in actions if action) > 1:
+        print("错误: --clear / --forget / --export / --import 一次只能用一个。", file=sys.stderr)
+        return 2
+    if args.replace and not args.import_path:
+        print("错误: --replace 只能和 --import 一起使用。", file=sys.stderr)
+        return 2
+    if args.export_path:
+        from .memory import save_payload
+
+        payload = memory.export_dict()
+        save_payload(args.export_path, payload)
+        print(
+            f"✓ 已导出记忆到 {args.export_path}"
+            f"（{len(payload['facts'])} 条事实、{len(payload['episodes'])} 条历史、"
+            f"{len(payload['topics'])} 个话题）"
+        )
+        return 0
+    if args.import_path:
+        from .memory import load_payload
+
+        payload = load_payload(Path(args.import_path))
+        counts = memory.import_dict(payload, merge=not args.replace)
+        if not memory.save():
+            return _warn_if_memory_unsaved(memory) or 3
+        mode = "替换" if args.replace else "合并"
+        print(
+            f"✓ 已{mode}导入记忆：新增 {counts['facts_added']} 条事实、"
+            f"{counts['episodes_added']} 条历史、{counts['topics_added']} 个话题"
+            f"（更新 {counts['topics_updated']} 个）"
+        )
+        return 0
     if args.clear:
         memory.facts.clear()
         memory.episodes.clear()
@@ -376,6 +440,97 @@ def _cmd_memory(buddy: StudyBuddy, args: argparse.Namespace) -> int:
         return failed or 0
 
     print(memory.digest())
+    return 0
+
+
+def _cmd_plan(buddy: StudyBuddy, args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from .plan import build_plan
+
+    start = None
+    if args.start:
+        try:
+            start = date.fromisoformat(args.start)
+        except ValueError as exc:
+            raise StudyError(f"起始日期格式应为 YYYY-MM-DD（收到 {args.start!r}）") from exc
+
+    plan = build_plan(
+        buddy.library,
+        book=args.book,
+        chapters=args.chapter,
+        days=args.days,
+        start=start,
+        memory=buddy.memory,
+    )
+    if args.json:
+        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    print(plan.render())
+    print()
+    print(_style("提示: 每天读完用 studybuddy quiz 自测，再用 grade 记录掌握度。", DIM))
+    return 0
+
+
+def _cmd_ocr(buddy: StudyBuddy, args: argparse.Namespace) -> int:
+    from .ocr import backend_hint, detect_backend, ocr_pdf, output_kind
+
+    pdf = Path(args.file)
+    if not pdf.exists():
+        print(f"找不到文件: {pdf}", file=sys.stderr)
+        return 1
+
+    backend = detect_backend(args.backend)
+    if backend is None:
+        print("错误: 没有找到可用的 OCR 后端。", file=sys.stderr)
+        print(backend_hint(), file=sys.stderr)
+        return 3
+    if not backend.available:
+        print(f"错误: {backend.name} 不可用。", file=sys.stderr)
+        print(backend.detail, file=sys.stderr)
+        return 3
+
+    kind = output_kind(backend)
+    default_suffix = "-ocr.jsonl" if kind == "jsonl" else "-ocr.pdf"
+    out = Path(args.out) if args.out else pdf.with_name(pdf.stem + default_suffix)
+
+    if args.dry_run:
+        print(f"后端: {backend.name}（{backend.detail}）")
+        print(f"输出: {out}")
+        next_command = "add-text" if kind == "jsonl" else "add"
+        print(f'下一步: studybuddy {next_command} "{out}" -t "{args.title or pdf.stem}"')
+        return 0
+
+    print(_style(f"使用 {backend.name} 识别 {pdf.name} …", DIM), flush=True)
+
+    def progress(done: int, total: int) -> None:
+        print(_style(f"  页 {done}/{total}", DIM), flush=True)
+
+    try:
+        output = ocr_pdf(pdf, out, backend=backend, progress=progress)
+    except AgentError as exc:
+        print(f"错误: OCR 失败：{exc}", file=sys.stderr)
+        return 3
+
+    print(f"✓ 已生成 {output}")
+    if not args.do_import:
+        if kind == "jsonl":
+            print(_style(f'下一步: studybuddy add-text "{output}" -t "{args.title or pdf.stem}"', DIM))
+        else:
+            print(_style(f'下一步: studybuddy add "{output}"', DIM))
+        return 0
+
+    title = args.title or pdf.stem
+    if kind == "jsonl":
+        book = buddy.add_document(
+            title=title,
+            pages=_read_pages(output),
+            course=args.course,
+            source=str(pdf),
+        )
+    else:
+        book = buddy.add_book(output, course=args.course, title=title)
+    print(f"✓ 已导入《{book.title}》 {book.pages} 页, {book.chunks} 个片段")
     return 0
 
 
@@ -538,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
         "review": _cmd_review,
         "doctor": _cmd_doctor,
         "memory": _cmd_memory,
+        "plan": _cmd_plan,
+        "ocr": _cmd_ocr,
         "profile": _cmd_profile,
         "stats": _cmd_stats,
     }

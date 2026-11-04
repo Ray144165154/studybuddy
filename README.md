@@ -143,6 +143,8 @@ make demo
 | `studybuddy ask "问题" --web` | 教材没有答案时联网搜索，引用标为 `[W1]` |
 | `studybuddy index` | 建立向量索引，启用混合检索（可选） |
 | `studybuddy add-text pages.jsonl -t 书名` | 导入已抽取的文本（OCR 结果、笔记） |
+| `studybuddy ocr 扫描版.pdf --import -c 概率论` | 自动 OCR 并导入（macOS 用 Vision，其他系统用 ocrmypdf） |
+| `studybuddy plan --days 14 --chapter 3-5` | 按考试范围生成逐日复习计划（`--json` 可脚本处理） |
 | `studybuddy ui` | 打开本地网页界面（浏览器里提问、导入、看记忆） |
 | `studybuddy desktop` | 把界面放进独立窗口（原生窗口，或 Edge/Chrome 的 app 模式） |
 | `studybuddy quiz --book 高等数学 -n 5` | 生成 5 道理解题（`-a` 显示答案） |
@@ -150,7 +152,7 @@ make demo
 | `studybuddy compare "导数" "微分"` | 易混概念对比表 |
 | `studybuddy review` | 按遗忘曲线给出今天该复习的题 |
 | `studybuddy grade "中值定理" --correct` | 记录自测结果，更新掌握度与下次复习时间 |
-| `studybuddy memory` | 查看记忆（`--forget f0001` / `--clear`） |
+| `studybuddy memory` | 查看记忆，或 `--export` / `--import` 迁移（`--forget` / `--clear` 仍可用） |
 | `studybuddy profile --major ...` | 设置学生画像 |
 | `studybuddy stats` | 书库与记忆概况 |
 
@@ -376,10 +378,39 @@ export STUDYBUDDY_EMBED_BASE_URL=http://127.0.0.1:11434/v1
 
 ```
 PDFError: no selectable text found in 概率论基础.pdf.
-It looks like a scanned book -- run OCR (e.g. ocrmypdf) and try again.
+It looks like a scanned book -- run OCR with `studybuddy ocr` first
+(macOS uses the built-in Vision engine; Windows/Linux use ocrmypdf).
 ```
 
-OCR 之后：OCR 工具产出的带文字层 PDF 用 `studybuddy add` 导入；OCR 结果保存成 JSONL/TXT 时用 `add-text` 导入（见下面两种方式）。
+`studybuddy ocr` 会自动挑本机可用的后端：
+
+| 系统 | 后端 | 需要什么 | 产物 |
+| --- | --- | --- | --- |
+| macOS | 系统 Vision（中文识别质量好） | Xcode Command Line Tools 的 `swiftc` | `*-ocr.jsonl` |
+| Windows / Linux | [ocrmypdf](https://ocrmypdf.readthedocs.io/) | `pip install ocrmypdf` + Tesseract 中文语言包 | `*-ocr.pdf` |
+
+```bash
+studybuddy ocr 概率论基础.pdf --dry-run              # 只看会用哪个后端、输出到哪
+studybuddy ocr 概率论基础.pdf --import -c 概率论     # 识别并直接导入书库
+studybuddy ocr 概率论基础.pdf                        # 只生成结果，之后 add / add-text
+```
+
+首次在 macOS 上运行会编译一次 Vision 小工具并缓存（452 页约 2.5 分钟）。没有可用后端时，
+命令会直接列出对应系统的安装命令，而不是报一句“OCR 失败”。
+
+也可以不用封装、手动跑：
+
+```bash
+# macOS
+swiftc -O scripts/ocr_macos.swift -o /tmp/ocr_macos \
+  -framework PDFKit -framework Vision -framework AppKit
+/tmp/ocr_macos 概率论基础.pdf pages.jsonl 1 422 150
+studybuddy add-text pages.jsonl -t "概率论基础" -c 概率论
+
+# Windows / Linux
+ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
+studybuddy add 概率论基础-ocr.pdf -c 概率论
+```
 
 **公式降噪**：数学扫描件的公式几乎必然被 OCR 认错（`σ`→`o`、`P(A|B)`→`P（AlB）`）。
 每个片段会记录两个信号——公式行占比、以及"中文教材里不该出现的假名"密度（`ん`/`で`
@@ -388,27 +419,7 @@ OCR 之后：OCR 工具产出的带文字层 PDF 用 `studybuddy add` 导入；O
 > （提示：该片段公式较多，OCR 可能失真；引用公式、条件或数值前，请说明不确定并要求读者核对原书。）
 
 这样模型会主动说"这里看不清、建议核对第 398 页"，而不是把乱码当成公式硬解释。
-实测一本 422 页的扫描教材里 29% 的片段被标记。macOS 上仓库自带一个 Vision OCR 脚本（中文识别质量好，
-不需要装 tesseract）：
-
-```bash
-# 编译 + 识别整本书（422 页约 2.5 分钟）
-swiftc -O scripts/ocr_macos.swift -o /tmp/ocr_macos \
-  -framework PDFKit -framework Vision -framework AppKit
-/tmp/ocr_macos 概率论基础.pdf pages.jsonl 1 422 150
-
-studybuddy add-text pages.jsonl -t "概率论基础" -c 概率论
-```
-
-**Windows / Linux** 用 [ocrmypdf](https://ocrmypdf.readthedocs.io/) 生成带文字层的 PDF，
-再 `studybuddy add` 即可：
-
-```powershell
-winget install --id UB-Mannheim.TesseractOCR   # 或 choco install tesseract
-pip install ocrmypdf
-ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
-studybuddy add 概率论基础-ocr.pdf -c 概率论
-```
+实测一本 422 页的扫描教材里 29% 的片段被标记。
 
 详见 [scripts/README.md](scripts/README.md)。
 
@@ -466,6 +477,37 @@ PDF ──► 按页抽文本 ──► 清洗/识别章节 ──► 分块（�
 - **可完全关闭**：`studybuddy ask ... --no-memory` 既不读也不写。
 - **遗忘曲线用简化 SM-2**：答对第一次 1 天、第二次 6 天、之后按难度系数递增；答错重置为 1 天并降低难度系数。
 
+### 换设备：导出 / 导入记忆
+
+记忆可以带走，不必从零开始：
+
+```bash
+studybuddy memory --export memory.json          # 导出（含画像、事实、历史、话题）
+studybuddy memory --import memory.json          # 在另一台电脑导入：默认合并
+studybuddy memory --import memory.json --replace  # 或者整体替换现有记忆
+```
+
+默认合并是幂等的：同一份文件导两次不会重复；只补缺的字段/条目，跨设备重复的记忆编号会自动重排；
+话题按“更保守”的方向合并（更早复习、更低掌握度），不会因为换设备把薄弱点冲淡。
+记忆文件带格式版本号，版本不兼容时会明确报错而不是静默丢数据。
+
+网页界面里也可以：打开「记忆」→「换设备」→「导出记忆」下载 JSON，在另一台电脑的同一面板点「导入记忆」。
+
+## 期末模式：复习计划
+
+考前只有两周，先决定每天读哪几节：
+
+```bash
+studybuddy plan --days 14                     # 全部教材，均分成 14 天
+studybuddy plan --book 高等数学 --chapter 3-5  # 只复习第 3 到 5 章
+studybuddy plan --days 7 --start 2026-06-20   # 指定起始日期
+studybuddy plan --days 7 --json               # 脚本/日历导入用
+```
+
+计划按书内小节顺序、按片段数均衡分配，每天给出小节、页码范围、一句重点；
+最后一天安排整卷模拟，前一天只看错题；到期复习话题会轮转进当天的 `复习:` 行。
+`--chapter` 支持 `3`、`3.1`、`3-5`、`第三章`，多个用逗号分隔，写错会提示可用章节。
+
 ## 数据放在哪
 
 CLI 与桌面版默认把数据放在每用户的应用数据目录，启动位置变化不会新建空书库：
@@ -499,7 +541,7 @@ studybuddy books
 
 ```bash
 make install     # 建虚拟环境并安装 dev 依赖
-make check       # ruff（含 format --check）+ mypy --strict + 480 个测试
+make check       # ruff（含 format --check）+ mypy --strict + 618 个测试
 make demo        # 离线端到端演示
 ```
 
@@ -513,12 +555,11 @@ make demo        # 离线端到端演示
 ## 路线图
 
 - [x] 扫描版 PDF 的 OCR 降级提示（公式失真提示、扫描件明确报错）
-- [ ] 内置 OCR 集成：目前只有 macOS 的 Vision 脚本（`scripts/ocr_macos.swift`），
-  Windows/Linux 需先用 ocrmypdf 生成带文字层的 PDF
+- [x] 内置 OCR 集成：`studybuddy ocr` 自动选后端（macOS 系统 Vision；Windows/Linux 用 ocrmypdf）
 - [x] 向量检索（可选，接 embedding API），与 BM25 混合排序
 - [x] 网页界面（上传 + 对话 + 记忆面板）
-- [ ] 记忆导入/导出，方便换设备
-- [ ] 期末模式：按考试范围生成整本书的复习计划
+- [x] 记忆导入/导出，方便换设备（CLI 与网页记忆面板都支持）
+- [x] 期末模式：按考试范围生成整本书的复习计划（`studybuddy plan`）
 
 ## 参与贡献
 
@@ -550,9 +591,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## 已知限制
 
-- 只支持**有文字层**的 PDF；扫描件会明确报错并提示先做 OCR（OCR 后导入生成的 PDF，或把 OCR
-  文本保存为 JSONL/TXT 再用 `add-text` 导入）。
-- OCR 会认错数学符号（`σ`→`o`、`𝒜`→`9`），公式类检索效果明显弱于正文。
+- 只支持**有文字层**的 PDF；扫描件会明确报错并提示用 `studybuddy ocr`（macOS 用系统 Vision，
+  Windows/Linux 需要 ocrmypdf + Tesseract 中文语言包）。
+- OCR 会认错数学符号（`σ`→`o`、`𝒜`→`9`），公式类检索效果明显弱于正文；程序会标记可能失真的片段。
 - 不做混合检索时，中文是纯词法匹配，同义改写（「求导」vs「微分」）可能漏召回；
   配置 embedding 后可以缓解，但 embedding 需要额外的提供方（DeepSeek 目前不提供
   `/embeddings`，可指向 OpenAI / 本地 Ollama，或使用本地 fastembed）。
@@ -575,7 +616,7 @@ schedules reviews with a simplified SM-2 algorithm. Retrieval is BM25 over CJK
 character bigrams plus a single-character fallback (no tokenizer dependency), so it
 runs fully offline except for the model calls. Chinese and English textbooks are both
 supported and tested.
-480 offline tests, MIT licensed.
+618 offline tests, MIT licensed.
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 

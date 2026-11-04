@@ -537,5 +537,52 @@ class TestBrowserUrl(unittest.TestCase):
         self.assertEqual(_browser_url("localhost", 8765), "http://localhost:8765")
 
 
+class TestMemoryTransfer(WebTestCase):
+    def test_export_returns_a_complete_snapshot(self) -> None:
+        self.memory.add_fact("导数薄弱", kind="weakness", topic="导数")
+        status, data = self.app().dispatch("GET", "/api/memory/export", None, {})
+        self.assertEqual(status, 200)
+        snapshot = data["snapshot"]
+        self.assertEqual(snapshot["version"], 1)
+        self.assertIn("profile", snapshot)
+        self.assertEqual(len(snapshot["facts"]), 1)
+
+    def test_import_merges_into_another_library(self) -> None:
+        self.memory.add_fact("导数薄弱", kind="weakness", topic="导数")
+        _status, exported = self.app().dispatch("GET", "/api/memory/export", None, {})
+
+        other_root = self.tmp / "other"
+        other_library = Library(other_root)
+        other_library.save()
+        buddy = StudyBuddy(
+            other_root,
+            model="test-model",
+            llm=ScriptedLLM(),
+            library=other_library,
+            memory=Memory(other_root),
+        )
+        status, data = WebApp(buddy).dispatch(
+            "POST", "/api/memory/import", {"snapshot": exported["snapshot"]}, {}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["counts"]["facts_added"], 1)
+        self.assertEqual(len(Memory(other_root).facts), 1)
+
+    def test_import_rejects_a_bad_snapshot(self) -> None:
+        status, data = self.app().dispatch("POST", "/api/memory/import", {"snapshot": {"version": 99}}, {})
+        self.assertEqual(status, 400)
+        self.assertIn("version", data["error"])
+        self.assertEqual(self.memory.facts, [])
+
+    def test_import_rolls_back_when_the_disk_refuses(self) -> None:
+        self.memory.add_fact("导数薄弱", kind="weakness", topic="导数")
+        snapshot = self.memory.export_dict()
+        self.memory.facts.clear()
+        with patch.object(self.memory, "save", return_value=False):
+            status, _data = self.app().dispatch("POST", "/api/memory/import", {"snapshot": snapshot}, {})
+        self.assertEqual(status, 409)
+        self.assertEqual(self.memory.facts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

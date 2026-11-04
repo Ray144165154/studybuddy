@@ -261,6 +261,37 @@ class WebApp:
                 break
         return [f"{section} 讲了什么？" for section in picks]
 
+    def export_memory(self) -> dict[str, Any]:
+        """The complete memory as a versioned snapshot the UI can download."""
+        with self._lock:
+            return {"snapshot": self.buddy.memory.export_dict()}
+
+    def import_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Merge (or replace) memory from a snapshot uploaded by the browser."""
+        snapshot = payload.get("snapshot")
+        if snapshot is None:
+            snapshot = payload.get("data")
+        if not isinstance(snapshot, dict):
+            raise StudyErrorBadRequest("缺少记忆快照（snapshot）")
+
+        merge = bool(payload.get("merge", True))
+        with self._lock:
+            memory = self.buddy.memory
+            before = memory.export_dict()
+            generation = self._memory_generation
+            self._memory_generation += 1
+            try:
+                counts = memory.import_dict(snapshot, merge=merge)
+            except AgentError:
+                self._memory_generation = generation
+                raise
+            if not memory.save():
+                # A failed write must not leave the in-memory state ahead of the disk.
+                memory.import_dict(before, merge=False)
+                self._memory_generation = generation
+                raise OSError(memory.last_save_error or "无法写入记忆文件")
+        return {"ok": True, "counts": counts}
+
     def memory_payload(self) -> dict[str, Any]:
         memory = self.buddy.memory
         return {
@@ -600,6 +631,10 @@ class WebApp:
                 return 200, self.configure(payload)
             if method == "POST" and path == "/api/memory/clear":
                 return 200, self.clear_memory()
+            if method == "GET" and path == "/api/memory/export":
+                return 200, self.export_memory()
+            if method == "POST" and path == "/api/memory/import":
+                return 200, self.import_memory(payload)
             if method == "POST" and path == "/api/profile":
                 return 200, self.update_profile(payload)
             if method == "POST" and path == "/api/quiz":

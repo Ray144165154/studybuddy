@@ -27,8 +27,14 @@ bash scripts/install-macos.command
 
 ## ocr_macos.swift —— 扫描版 PDF 的 OCR
 
-本项目不内置 OCR 引擎：扫描件会被 `read_pdf` 明确拒绝，并提示先做 OCR。
-macOS 上可以用系统自带的 Vision 框架（对中文识别质量很好，无需安装 tesseract）：
+`studybuddy ocr` 会自动挑本机可用的后端：macOS 用系统自带的 Vision 框架（对中文识别质量很好，
+无需安装 tesseract），Windows/Linux 用 ocrmypdf。日常使用不需要手动编译：
+
+```bash
+studybuddy ocr 概率论基础.pdf --import -c 概率论
+```
+
+下面的 Swift 脚本就是 `studybuddy ocr` 在 macOS 下调用的同一份源码，也可以手动跑：
 
 ```bash
 # 1. 编译（约 30 秒）
@@ -67,5 +73,5 @@ ocrmypdf -l chi_sim 概率论基础.pdf 概率论基础-ocr.pdf
 studybuddy add 概率论基础-ocr.pdf -c 概率论
 ```
 
-> 注：本项目只提供 macOS 的 OCR 脚本；Windows/Linux 不内置 OCR 引擎，用上面这个
-> 成熟工具即可。缺 OCR 时 `studybuddy add` 会明确报错并提示，不会导入空书。
+> 注：`studybuddy ocr` 会自动选择后端，不需要手动执行上面的命令；没有可用后端时它会给出
+> 对应系统的安装命令，`studybuddy add` 遇到扫描件也会提示改用 `studybuddy ocr`。
