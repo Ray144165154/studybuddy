@@ -188,11 +188,24 @@ function renderBooks() {
     item.append(el("div", "title", book.title));
     item.append(el("div", "meta", `${book.pages} 页 · ${book.chunks} 片段${book.course ? " · " + book.course : ""}`));
     const row = el("div", "row");
-    const quiz = el("button", "btn tiny", "出题");
-    quiz.onclick = () => runQuiz(book.title);
-    const outline = el("button", "btn tiny", "提纲");
-    outline.onclick = () => runSummary(book.title);
-    row.append(quiz, outline);
+    const quiz = el("button", "btn tiny model-action", "出题");
+    quiz.disabled = $("send").disabled;
+    quiz.onclick = () => runQuiz(book.id);
+    const outline = el("button", "btn tiny model-action", "提纲");
+    outline.disabled = $("send").disabled;
+    outline.onclick = () => runSummary(book.id);
+    const remove = el("button", "btn tiny ghost", "删除");
+    remove.title = "从书库移除；不删除原始 PDF 文件";
+    remove.onclick = async () => {
+      if (!confirm(`从书库移除《${book.title}》？\n原始 PDF 文件不会被删除。`)) return;
+      try {
+        await api("/api/remove-book", { id: book.id });
+        await refresh();
+      } catch (error) {
+        alert(`删除失败: ${error.message}`);
+      }
+    };
+    row.append(quiz, outline, remove);
     item.append(row);
     list.append(item);
   }
@@ -333,30 +346,40 @@ function scrollDown() {
   messages.scrollTop = messages.scrollHeight;
 }
 
-async function ask(question) {
-  if ($("send").disabled) return;
+function setModelBusy(busy) {
+  $("send").disabled = busy;
+  document.querySelectorAll(".model-action").forEach((button) => { button.disabled = busy; });
+}
+
+function beginModelRequest() {
+  if ($("send").disabled) return false;
   if (!STATE || !STATE.stats.books) {
     alert("先导入一本教材");
-    return;
+    return false;
   }
   if (!STATE.llm_ready) {
     openSettings();
-    return;
+    return false;
   }
+  setModelBusy(true);
+  return true;
+}
+
+async function ask(question) {
+  if (!beginModelRequest()) return;
   $("question").value = "";
   addUser(question);
   const card = addAssistantCard();
   card.innerHTML = '<p class="foot">检索教材中…</p>';
   scrollDown();
 
-  const send = $("send");
-  send.disabled = true;
   try {
     const payload = {
       question,
       rewrite: $("rewrite").checked,
       semantic: $("semantic").checked,
       web: $("web").checked && !$("web").disabled,
+      remember: $("remember").checked,
     };
     const data = await api("/api/ask", payload);
     renderAnswer(card, data);
@@ -365,7 +388,7 @@ async function ask(question) {
     card.append(el("div", "warn", `出错: ${error.message}`));
     if (!$("question").value) $("question").value = question;
   } finally {
-    send.disabled = false;
+    setModelBusy(false);
     scrollDown();
   }
 }
@@ -509,6 +532,7 @@ function renderAnswer(card, data) {
 // ---------------------------------------------------------------------------
 
 async function runQuiz(book) {
+  if (!beginModelRequest()) return;
   clearEmpty();
   const card = addAssistantCard();
   card.innerHTML = '<p class="foot">出题中…</p>';
@@ -539,11 +563,14 @@ async function runQuiz(book) {
   } catch (error) {
     card.innerHTML = "";
     card.append(el("div", "warn", `出错: ${error.message}`));
+  } finally {
+    setModelBusy(false);
+    scrollDown();
   }
-  scrollDown();
 }
 
 async function runSummary(book) {
+  if (!beginModelRequest()) return;
   clearEmpty();
   const card = addAssistantCard();
   card.innerHTML = '<p class="foot">整理提纲中…</p>';
@@ -557,8 +584,10 @@ async function runSummary(book) {
   } catch (error) {
     card.innerHTML = "";
     card.append(el("div", "warn", `出错: ${error.message}`));
+  } finally {
+    setModelBusy(false);
+    scrollDown();
   }
-  scrollDown();
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +791,12 @@ async function saveSettings() {
   await refresh();
 }
 
+function submitSettings() {
+  saveSettings().then(() => $("settings").close()).catch((error) => {
+    $("settings-error").textContent = error.message;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // wiring
 // ---------------------------------------------------------------------------
@@ -801,12 +836,17 @@ document.querySelectorAll(".presets button").forEach((button) => {
 });
 
 $("btn-settings").onclick = openSettings;
+$("btn-cancel-settings").onclick = () => $("settings").close();
 $("btn-save-settings").onclick = (event) => {
   event.preventDefault();
-  saveSettings().then(() => $("settings").close()).catch((error) => {
-    $("settings-error").textContent = error.message;
-  });
+  submitSettings();
 };
+$("settings").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.isComposing && event.target.tagName === "INPUT") {
+    event.preventDefault();
+    submitSettings();
+  }
+});
 
 refresh().catch((error) => {
   $("status").textContent = `无法连接后端: ${error.message}`;

@@ -474,6 +474,20 @@ class TestErrors(SecurityTestCase):
         self.assertEqual(status, 502)
         self.assertIn("模型调用失败", data["error"])
 
+    def test_auth_failure_points_at_the_settings(self) -> None:
+        class Rejecting:
+            def complete(self, messages: Any, tools: Any = None) -> LLMResponse:
+                from studybuddy.errors import LLMError
+
+                raise LLMError("HTTP 401 from https://api.example/v1", status=401)
+
+            async def acomplete(self, messages: Any, tools: Any = None) -> LLMResponse:
+                return self.complete(messages, tools)
+
+        status, data = self.make_app(Rejecting()).dispatch("POST", "/api/ask", {"question": "q"}, {})
+        self.assertEqual(status, 502)
+        self.assertIn("API Key", data["error"])
+
     def test_data_directory_errors_are_409(self) -> None:
         """A read-only volume is an environment problem, not a server bug or bad input."""
         app = self.make_app(ScriptedLLM())

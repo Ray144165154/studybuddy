@@ -17,6 +17,7 @@ function setup() {
         value: "", disabled: false, checked: false, textContent: "", handlers: {},
         addEventListener(type, handler) { this.handlers[type] = handler; },
         showModal() { this.open = true; },
+        close() { this.open = false; },
         requestSubmit() { return this.handlers.submit?.({ preventDefault() {} }); },
       });
       return nodes.get(id);
@@ -31,10 +32,12 @@ function setup() {
     addAssistantCard = () => ({ append() {}, innerHTML: "" });
     scrollDown = () => {};
     renderAnswer = () => {};
+    clearEmpty = () => {};
     el = () => ({});
     api = async () => ({});
   `, context);
   const get = (id) => document.getElementById(id);
+  get("remember").checked = true;
   get("ask-form").requestSubmit = () => get("ask-form").handlers.submit({ preventDefault() {} });
   return { context, get, alerts, run: (code) => vm.runInContext(code, context) };
 }
@@ -106,4 +109,105 @@ test("reopening settings removes an unsaved key", () => {
   run("openSettings()");
   assert.equal(get("set-key").value, "");
   assert.equal(get("settings").open, true);
+});
+
+test("settings cancel is not the implicit Enter target", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../src/studybuddy/webui/index.html"), "utf8");
+  const cancel = html.match(/<button[^>]*id="btn-cancel-settings"[^>]*>/);
+  assert.ok(cancel, "cancel button should keep its id");
+  assert.match(cancel[0], /type="button"/);
+  assert.match(html, /id="btn-save-settings"[^>]*value="default"/);
+});
+
+test("Enter in a settings field saves and closes", async () => {
+  const { context, get, run } = setup();
+  context.saves = 0;
+  run("saveSettings = async () => { saves += 1; }");
+  get("settings").open = true;
+  const prevented = [];
+  get("settings").handlers.keydown({
+    key: "Enter",
+    isComposing: false,
+    target: { tagName: "INPUT" },
+    preventDefault() { prevented.push(true); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.saves, 1);
+  assert.equal(prevented.length, 1);
+  assert.equal(get("settings").open, false);
+});
+
+test("questions send the selected memory mode", async () => {
+  for (const remember of [false, true]) {
+    const { get, context, run } = setup();
+    let payload;
+    context.request = async (path, body) => { payload = body; return {}; };
+    run("api = request");
+    get("remember").checked = remember;
+    get("question").value = "条件概率";
+    await get("ask-form").requestSubmit();
+    assert.equal(payload.remember, remember);
+  }
+});
+
+test("quick actions share the request guard and always release it", async () => {
+  for (const action of ["runQuiz", "runSummary"]) {
+    for (const fail of [false, true]) {
+      const { get, context, run } = setup();
+      let requests = 0;
+      let finish;
+      let requestPath;
+      context.request = (path, body) => {
+        requests += 1;
+        requestPath = path;
+        assert.equal(body.book, "unique-id");
+        return new Promise((resolve, reject) => {
+          finish = () => fail ? reject(new Error("unavailable")) : resolve({ questions: [], text: "提纲" });
+        });
+      };
+      run("api = request; el = () => ({ append() {} })");
+      get("question").value = "保留草稿";
+      const pending = run(`${action}("unique-id")`);
+      assert.equal(get("send").disabled, true);
+      await run('runQuiz("another-id")');
+      await run('runSummary("another-id")');
+      await get("ask-form").requestSubmit();
+      assert.equal(requests, 1);
+      assert.equal(requestPath, action === "runQuiz" ? "/api/quiz" : "/api/summary");
+      assert.equal(get("question").value, "保留草稿");
+      finish();
+      await pending;
+      assert.equal(get("send").disabled, false);
+    }
+  }
+});
+
+test("quick actions require model configuration", async () => {
+  const { get, context, run } = setup();
+  context.request = () => { assert.fail("must not call the model"); };
+  run('api = request; STATE.llm_ready = false');
+  await run('runQuiz("unique-id")');
+  await run('runSummary("unique-id")');
+  assert.equal(get("settings").open, true);
+  assert.equal(get("send").disabled, false);
+});
+
+test("book actions use IDs even when two books have the same title", () => {
+  const { get, context, run } = setup();
+  const items = [];
+  get("books").append = (node) => items.push(node);
+  context.makeNode = (tag, className, text) => ({
+    tag, className, text, children: [], append(...nodes) { this.children.push(...nodes); },
+  });
+  run(`
+    el = makeNode;
+    STATE.books = [{ id: "first", title: "高数" }, { id: "second", title: "高数" }];
+    renderBooks();
+    runQuiz = (id) => { selectedQuiz = id; };
+    runSummary = (id) => { selectedSummary = id; };
+  `);
+  items[1].children[2].children[0].onclick();
+  items[1].children[2].children[1].onclick();
+  assert.equal(run("selectedQuiz"), "second");
+  assert.equal(run("selectedSummary"), "second");
 });

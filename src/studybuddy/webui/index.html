@@ -51,6 +51,7 @@
           <label class="check"><input type="checkbox" id="rewrite"> 查询改写</label>
           <label class="check"><input type="checkbox" id="semantic" checked> 语义检索</label>
           <label class="check" id="web-wrap"><input type="checkbox" id="web"> 联网搜索</label>
+          <label class="check" title="关闭后，本次提问不读取或保存学习记忆；不影响出题和复习记录"><input type="checkbox" id="remember" checked> 学习记忆</label>
           <span class="spacer"></span>
           <button class="btn primary" type="submit" id="send">发送</button>
         </div>
@@ -86,6 +87,8 @@
         <dd>扫描件 OCR 认错符号的片段会标注「公式可能失真」；LaTeX 公式会自动渲染。</dd>
         <dt>Key 会被保存吗</dt>
         <dd>不会。只存在当前进程内存，关掉就没了；模型和端点会记住。</dd>
+        <dt>临时问题不想被记住</dt>
+        <dd>取消输入框下方的「学习记忆」，之后的提问不读取或保存学习记忆，也会省去记忆提取请求。重新勾选即可恢复；已有记忆不会删除，出题和复习记录不受影响。</dd>
         <dt>支持哪些模型</dt>
         <dd>任何 OpenAI 兼容接口：DeepSeek、OpenAI、OpenRouter、Ollama、vLLM。</dd>
         <dt>换电脑后无法上传或找不到目录</dt><dd>Windows 请先解压整个桌面安装包，保留 exe 同级的 _internal 文件夹，再运行 exe。不要在压缩包内启动或只复制 exe。书库下方可查看实际数据目录；源码版需安装 Python 和项目依赖后启动，不能直接双击 index.html。</dd>
@@ -121,7 +124,7 @@
       <p class="hint">同一接口留空会保留当前 Key；更换接口地址时请填写对应 Key，旧 Key 会清除。</p>
       <p id="settings-error" class="warn" role="alert"></p>
       <div class="dialog-actions">
-        <button class="btn ghost" value="cancel">取消</button>
+        <button class="btn ghost" type="button" id="btn-cancel-settings">取消</button>
         <button class="btn primary" id="btn-save-settings" value="default">保存</button>
       </div>
     </form>

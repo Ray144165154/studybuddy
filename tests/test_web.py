@@ -133,6 +133,20 @@ class TestState(WebTestCase):
 
 
 class TestAsk(WebTestCase):
+    def test_memory_disabled_does_not_read_or_save_memory(self) -> None:
+        self.memory.add_fact("希望先看证明", kind="preference")
+        self.memory.save()
+        original = (self.root / "memory.json").read_bytes()
+        app = self.app(says("条件概率的定义是…… [1]"))
+        status, data = app.dispatch(
+            "POST", "/api/ask", {"question": "什么是条件概率？", "remember": False}, {}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["memories"], [])
+        self.assertEqual(app.buddy.llm.request_count, 1)
+        self.assertNotIn("希望先看证明", app.buddy.llm.last_user_content)
+        self.assertEqual((self.root / "memory.json").read_bytes(), original)
+
     def test_ask_returns_answer_and_sources(self) -> None:
         app = self.app(says("条件概率的定义是…… [1]"), says(MEMORY_JSON))
         status, data = app.dispatch("POST", "/api/ask", {"question": "什么是条件概率？"}, {})
@@ -312,6 +326,22 @@ class TestBooksAndUpload(WebTestCase):
     def test_upload_requires_data(self) -> None:
         status, _data = self.app().dispatch("POST", "/api/add-book", {"name": "x.pdf"}, {})
         self.assertEqual(status, 400)
+
+    def test_remove_book(self) -> None:
+        app = self.app()
+        status, data = app.dispatch("POST", "/api/remove-book", {"id": "m1"}, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["title"], "概率论基础")
+        self.assertEqual(app.buddy.library.books, [])
+        self.assertEqual(app.buddy.library.chunks, [])
+
+    def test_remove_book_requires_a_known_id(self) -> None:
+        app = self.app()
+        for payload in ({}, {"id": "missing"}):
+            status, data = app.dispatch("POST", "/api/remove-book", payload, {})
+            self.assertEqual(status, 400)
+            self.assertIn("教材", data["error"])
+        self.assertEqual(len(app.buddy.library.books), 1)
 
 
 class TestSettings(WebTestCase):

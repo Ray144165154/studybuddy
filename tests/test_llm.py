@@ -204,6 +204,18 @@ class TestRetries(unittest.TestCase):
         self.assertIn("bad key", str(ctx.exception))
         self.assertEqual(self.sleep.call_count, 0)
 
+    def test_provider_error_never_echoes_the_api_key(self) -> None:
+        key = "sk-live-abc123456789"
+        detail = f"Authentication Fails, Your api key: {key} is invalid"
+        with (
+            patch("studybuddy.llm.urllib.request.urlopen", side_effect=http_error(401, detail)),
+            self.assertRaises(LLMError) as ctx,
+        ):
+            LLM(api_key=key, max_retries=0).complete([Message(role="user", content="x")])
+        self.assertNotIn(key, str(ctx.exception))
+        self.assertIn("sk-***", str(ctx.exception))
+        self.assertNotIn(key, ctx.exception.body or "")
+
     def test_network_error_is_retried(self) -> None:
         side_effect = [urllib.error.URLError("offline"), FakeResponse(chat_body("ok"))]
         with patch("studybuddy.llm.urllib.request.urlopen", side_effect=side_effect):

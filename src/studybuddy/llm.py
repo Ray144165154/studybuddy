@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import ssl
 import time
 import urllib.error
@@ -39,6 +40,15 @@ _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 # keep only what is useful for the message and the logs.
 _MAX_ERROR_BODY = 64 * 1024
 _MALFORMED_RESPONSE = "模型返回了无法解析的响应"
+
+_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{4,}")
+
+
+def _redact_secrets(text: str, api_key: str) -> str:
+    """Providers echo the key in 401 bodies; the UI must never show it."""
+    if len(api_key) >= 8 and api_key != "not-needed":
+        text = text.replace(api_key, "sk-***")
+    return _KEY_PATTERN.sub("sk-***", text)
 
 
 def _resolve_api_key(explicit: str | None) -> str:
@@ -201,7 +211,11 @@ class LLM:
         except Exception:
             if body:
                 message = f"{message}: {body[:300]}"
-        return LLMError(message, status=exc.code, body=body)
+        return LLMError(
+            _redact_secrets(message, self.api_key),
+            status=exc.code,
+            body=_redact_secrets(body, self.api_key),
+        )
 
     def _with_retries(self, call: Callable[[], Any]) -> Any:
         last: Exception | None = None

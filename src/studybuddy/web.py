@@ -463,6 +463,14 @@ class WebApp:
             )
         return {"book": book.to_dict()}
 
+    def remove_book(self, payload: dict[str, Any]) -> dict[str, Any]:
+        book_id = str(payload.get("id") or "").strip()
+        if not book_id:
+            raise StudyErrorBadRequest("缺少要删除的教材 id")
+        with self._lock:
+            book = self.buddy.library.remove_book(book_id)
+        return {"ok": True, "title": book.title, "id": book.id}
+
     def configure(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Save model settings; keep keys in memory and discard them when endpoints change."""
         for field in ("model", "base_url", "api_key"):
@@ -627,6 +635,8 @@ class WebApp:
                 return 200, self.add_book(payload)
             if method == "POST" and path == "/api/add-text":
                 return 200, self.add_text(payload)
+            if method == "POST" and path == "/api/remove-book":
+                return 200, self.remove_book(payload)
             if method == "POST" and path == "/api/config":
                 return 200, self.configure(payload)
             if method == "POST" and path == "/api/memory/clear":
@@ -647,7 +657,8 @@ class WebApp:
         except StudyErrorBadRequest as exc:
             return 400, {"error": str(exc)}
         except LLMError as exc:
-            return 502, {"error": f"模型调用失败: {exc}"}
+            hint = "。请检查设置里的 API Key 与接口地址是否匹配" if exc.status in (401, 403) else ""
+            return 502, {"error": f"模型调用失败: {exc}{hint}"}
         except AgentError as exc:
             # PDFError / LibraryError / StudyError: the user's input or data is at fault.
             return 400, {"error": str(exc)}
